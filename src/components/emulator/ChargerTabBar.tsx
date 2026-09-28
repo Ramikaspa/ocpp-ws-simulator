@@ -21,20 +21,20 @@
  */
 
 import {
-    ChevronLeft,
-    ChevronRight,
-    Copy,
-    Loader2,
-    Plus,
-    Wifi,
-    WifiOff,
-    X,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Loader2,
+  Plus,
+  Wifi,
+  WifiOff,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-    Tooltip,
-    TooltipContent,
-    TooltipTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { removeService } from "@/lib/ocppClient";
 import { cn } from "@/lib/utils";
@@ -128,7 +128,10 @@ export function ChargerTabBar() {
 
     if (direction === "right") {
       // Scrolling right moves tabs leftwards. Stop when active tab's left edge reaches the left view boundary
-      let maxStep = Math.max(0, el.scrollWidth - el.clientWidth - el.scrollLeft);
+      let maxStep = Math.max(
+        0,
+        el.scrollWidth - el.clientWidth - el.scrollLeft,
+      );
       if (activeEl) {
         const containerRect = el.getBoundingClientRect();
         const activeRect = activeEl.getBoundingClientRect();
@@ -202,6 +205,29 @@ export function ChargerTabBar() {
       tabButtonRefs.current[target.id]?.focus();
     }
   };
+
+  // Global Ctrl+Arrow shortcut to switch charger tabs from anywhere in the app
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || chargers.length < 2) return;
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+
+      e.preventDefault();
+      const currentIdx = chargers.findIndex((c) => c.id === activeChargerId);
+      if (currentIdx === -1) return;
+
+      const nextIdx =
+        e.key === "ArrowRight"
+          ? (currentIdx + 1) % chargers.length
+          : (currentIdx - 1 + chargers.length) % chargers.length;
+
+      const target = chargers[nextIdx];
+      setActiveCharger(target.id);
+      tabButtonRefs.current[target.id]?.focus();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [chargers, activeChargerId, setActiveCharger]);
 
   return (
     <nav

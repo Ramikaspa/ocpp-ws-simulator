@@ -101,7 +101,7 @@ PASSWORD="your_password"
 2. Select your required OCPP version using the version picker.
 3. Click **Connect** to establish the WebSocket connection to your CSMS.
 4. Use the connector cards to visually simulate charging flows: authorizing, starting/stopping transactions, and sending meter readings to the cloud.
-5. Watch the **OCPP Log** panel for detailed message traces and payload inspection.
+5. Watch the **Simulator Logs** panel for detailed message traces and payload inspection.
 
 ## Tech Stack
 

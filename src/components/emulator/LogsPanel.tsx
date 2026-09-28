@@ -393,7 +393,7 @@ export function LogsPanel({ onHide }: { onHide?: () => void }) {
             className="flex items-center gap-2 text-xs font-semibold text-t-primary uppercase tracking-wider shrink-0"
           >
             <Radio className="size-3.5 text-brand" aria-hidden="true" />
-            OCPP log
+            Simulator Logs
           </h2>
           <Badge variant="neutral" className="h-5 font-mono tabular-nums">
             <span className="sr-only">Total messages: </span>
@@ -487,7 +487,7 @@ export function LogsPanel({ onHide }: { onHide?: () => void }) {
               <FileSpreadsheet aria-hidden="true" />
             </IconButton>
             <ConfirmAction
-              title="Clear the OCPP log?"
+              title="Clear the Simulator Logs?"
               description="All messages for this charger are removed from the log. Export first if you need them."
               confirmLabel="Clear log"
               onConfirm={clearLogs}

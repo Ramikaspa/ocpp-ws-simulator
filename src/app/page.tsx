@@ -232,7 +232,7 @@ export default function Home() {
                     className="w-full shrink-0 justify-start rounded-none border-t border-t-b-subtle bg-surface-inset px-4"
                   >
                     <PanelBottomOpen aria-hidden="true" />
-                    Show OCPP log
+                    Show Simulator Logs
                     <kbd className="ml-auto font-mono text-2xs font-normal text-t-muted">
                       Ctrl+`
                     </kbd>

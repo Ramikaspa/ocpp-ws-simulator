@@ -31,8 +31,8 @@ const GROUPS = [
       { keys: ["Alt", "C"], label: "New charger" },
       { keys: ["Ctrl", "Enter"], label: "Connect / Disconnect" },
       {
-        keys: ["←", "→"],
-        label: "Switch charger (charger tabs focused)",
+        keys: ["Ctrl", "← / →"],
+        label: "Switch charger tab",
       },
     ],
   },
