@@ -172,11 +172,21 @@ export function ChargerTabBar() {
 							<Tooltip>
 								<TooltipTrigger
 									render={
-										<span
+										<button
+											type='button'
 											className='inline-flex items-center justify-center cursor-default px-1 shrink-0 text-t-muted hover:text-t-primary transition-colors'
 											onClick={e => {
 												e.stopPropagation();
 												e.preventDefault();
+											}}
+											onKeyDown={e => {
+												if (
+													e.key === 'Enter' ||
+													e.key === ' '
+												) {
+													e.stopPropagation();
+													e.preventDefault();
+												}
 											}}
 										>
 											{slot.runtime.status ===
@@ -197,7 +207,7 @@ export function ChargerTabBar() {
 													aria-hidden='true'
 												/>
 											)}
-										</span>
+										</button>
 									}
 								/>
 								<TooltipContent
@@ -210,6 +220,9 @@ export function ChargerTabBar() {
 
 							{/* In-tab action buttons — operates strictly on slot.id, does NOT switch tabs */}
 							<div
+								role='toolbar'
+								aria-label={`${label} actions`}
+								tabIndex={-1}
 								className={cn(
 									'items-center gap-1 shrink-0 pr-1.5 pl-0.5',
 									isActive
