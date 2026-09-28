@@ -1,12 +1,13 @@
 "use client";
 
 import { Copy, Loader2, Plus, Wifi, WifiOff, X } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { removeService } from "@/lib/ocppClient";
 import { cn } from "@/lib/utils";
 import { useEmulatorStore } from "@/store/emulatorStore";
-import { ConfirmAction, IconButton } from "./kit";
+import { ConfirmAction, IconButton, RenameAction } from "./kit";
 
 /* ─── helpers ─────────────────────────────────────────────────── */
 const STATUS: Record<string, { dot: string; label: string }> = {
@@ -25,8 +26,10 @@ export function ChargerTabBar() {
     addCharger,
     removeCharger,
     duplicateCharger,
+    updateChargerLabel,
   } = useEmulatorStore();
 
+  const [renameOpen, setRenameOpen] = useState(false);
   const activeIdx = chargers.findIndex((c) => c.id === activeChargerId);
   const active = chargers[activeIdx];
   const activeLabel = active
@@ -55,6 +58,8 @@ export function ChargerTabBar() {
               <TabsTrigger
                 key={slot.id}
                 value={slot.id}
+                // Mouse shortcut; the Rename button is the keyboard path.
+                onDoubleClick={() => setRenameOpen(true)}
                 className="min-w-30 max-w-60 flex-none justify-start font-medium"
               >
                 <span
@@ -88,6 +93,15 @@ export function ChargerTabBar() {
 
       {/* Actions for the selected charger — always visible, not hover-only */}
       <div className="flex items-center gap-0.5 shrink-0">
+        {active && (
+          <RenameAction
+            subject="charger"
+            name={activeLabel}
+            onRename={(name) => updateChargerLabel(active.id, name)}
+            open={renameOpen}
+            onOpenChange={setRenameOpen}
+          />
+        )}
         <IconButton
           label={`Duplicate ${activeLabel}`}
           size="icon-sm"

@@ -147,12 +147,19 @@ export function useActiveCharger() {
     [id, store],
   );
 
+  const updateConnectorName = useCallback(
+    (connectorId: number, name: string) =>
+      store.updateConnectorName(id, connectorId, name),
+    [id, store],
+  );
+
   const spawnFleet = store.spawnFleet;
 
   return {
     // Slot identity
     id: slot.id,
     label: slot.label,
+    connectorNames: slot.connectorNames,
     // Config
     config: slot.config,
     savedProfiles: slot.savedProfiles,
@@ -183,6 +190,7 @@ export function useActiveCharger() {
     setCostInfo,
     addDisplayMessage,
     clearDisplayMessage,
+    updateConnectorName,
     spawnFleet,
   };
 }

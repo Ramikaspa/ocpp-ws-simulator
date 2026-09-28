@@ -598,7 +598,7 @@ export function LocalhostGuideDialog({
                       <Server className="h-4 w-4 text-amber-400" />
                       Test Local CSMS Reachability
                     </span>
-                    <span className="text-xs text-t-secondary truncate max-w-[200px]">
+                    <span className="text-xs text-t-secondary truncate max-w-50">
                       Active:{" "}
                       <code className="text-brand-strong font-mono">
                         {config.endpoint}
@@ -845,7 +845,7 @@ export function LocalhostGuideDialog({
             <span className="text-t-muted text-xs flex items-center gap-1 min-w-0">
               <Info className="h-3 w-3 shrink-0" />
               <span className="shrink-0">CSMS URL:</span>
-              <span className="font-mono text-white truncate max-w-[240px]">
+              <span className="font-mono text-white truncate max-w-60">
                 {config.endpoint}
               </span>
             </span>

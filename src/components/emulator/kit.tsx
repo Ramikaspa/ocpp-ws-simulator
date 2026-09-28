@@ -11,14 +11,16 @@
  * status never relies on colour alone.
  */
 
-import { Info } from "lucide-react";
+import { Info, Pencil } from "lucide-react";
 import {
   Children,
   cloneElement,
   isValidElement,
   type ReactElement,
   type ReactNode,
+  useEffect,
   useId,
+  useRef,
   useState,
 } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -38,6 +40,13 @@ import {
   FieldDescription,
   FieldLabel,
 } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -299,5 +308,92 @@ export function ConfirmAction({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+/* ─────────────────────────────── Rename ─────────────────────────────── */
+
+/**
+ * Pencil button that opens a small rename form (shadcn Popover). A real
+ * button, so it is reachable by keyboard and announced by screen readers;
+ * callers may also open it from a double-click shortcut via `open`.
+ * An empty name is passed through as "" — the store maps it to the default.
+ */
+export function RenameAction({
+  subject,
+  name,
+  onRename,
+  maxLength = 40,
+  open,
+  onOpenChange,
+  className,
+}: {
+  /** What is being renamed, e.g. "charger" — used in labels. */
+  subject: string;
+  /** Current display name. */
+  name: string;
+  onRename: (name: string) => void;
+  maxLength?: number;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  className?: string;
+}) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isOpen = open ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
+  const [draft, setDraft] = useState(name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Start from the current name every time the form opens.
+  useEffect(() => {
+    if (isOpen) setDraft(name);
+  }, [isOpen, name]);
+
+  return (
+    <Popover open={isOpen} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <IconButton
+            label={`Rename ${subject} ${name}`}
+            size="icon-sm"
+            className={className}
+          />
+        }
+      >
+        <Pencil aria-hidden="true" />
+      </PopoverTrigger>
+      <PopoverContent align="start" initialFocus={inputRef}>
+        <form
+          className="flex flex-col gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onRename(draft.trim());
+            setOpen(false);
+          }}
+        >
+          <PopoverTitle className="capitalize">Rename {subject}</PopoverTitle>
+          <Field
+            label="Name"
+            hint="Leave empty to go back to the default name."
+          >
+            <Input
+              ref={inputRef}
+              value={draft}
+              maxLength={maxLength}
+              onChange={(e) => setDraft(e.target.value)}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button variant="neutral" size="sm" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm">
+              Save
+            </Button>
+          </div>
+        </form>
+      </PopoverContent>
+    </Popover>
   );
 }

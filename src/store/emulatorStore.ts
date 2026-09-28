@@ -266,6 +266,8 @@ export interface ChargerRuntimeState {
 export interface ChargerSlot {
   id: string;
   label: string;
+  /** User-editable connector display names. Key = connectorId, value = custom name. Empty string = use default. */
+  connectorNames: Record<number, string>;
   config: EmulatorConfig;
   savedProfiles: ConfigProfile[];
   runtime: ChargerRuntimeState;
@@ -284,6 +286,7 @@ export interface EmulatorStore {
   setActiveCharger: (id: string) => void;
   reorderChargers: (fromIndex: number, toIndex: number) => void;
   updateChargerLabel: (id: string, label: string) => void;
+  updateConnectorName: (id: string, connectorId: number, name: string) => void;
 
   // ── Per-charger config ──
   updateConfig: (id: string, cfg: Partial<EmulatorConfig>) => void;
@@ -347,11 +350,20 @@ export interface EmulatorStore {
   // ── Live Tariff / Cost ──
   setCostInfo: (
     id: string,
-    costInfo: { totalCost: number; currency: string; message?: string } | null,
+    costInfo: {
+      totalCost: number;
+      currency: string;
+      message?: string;
+    } | null,
   ) => void;
   addDisplayMessage: (
     id: string,
-    msg: { id: number; priority: string; message: string; timestamp: number },
+    msg: {
+      id: number;
+      priority: string;
+      message: string;
+      timestamp: number;
+    },
   ) => void;
   clearDisplayMessage: (id: string, msgId: number) => void;
 
@@ -575,7 +587,10 @@ const makeDefaultConfig = (index: number): EmulatorConfig => ({
   securityProfile: 0,
   basicAuthPassword: "",
   bootNotification: { ...DEFAULT_BOOT_NOTIFICATION },
-  simulation: { ...DEFAULT_SIMULATION, measurands: { ...DEFAULT_MEASURANDS } },
+  simulation: {
+    ...DEFAULT_SIMULATION,
+    measurands: { ...DEFAULT_MEASURANDS },
+  },
   stationConfig: syncDerivedKeys({
     numberOfConnectors: 1,
     simulation: {
@@ -804,11 +819,18 @@ const nextFreeChargerIndex = (chargers: ChargerSlot[]): number => {
 const chargePointIdForIndex = (index: number) =>
   `CP-${String(index).padStart(3, "0")}`;
 
+/** Smallest "Charger N" that no charger in the list uses as its name. */
+const defaultChargerLabel = (chargers: ChargerSlot[]): string => {
+  const taken = new Set(chargers.map((c) => c.label));
+  for (let i = 1; ; i++) if (!taken.has(`Charger ${i}`)) return `Charger ${i}`;
+};
+
 export const makeDefaultSlot = (index: number): ChargerSlot => {
   const cfg = makeDefaultConfig(index);
   return {
     id: nanoid(8),
     label: `Charger ${index}`,
+    connectorNames: {},
     config: cfg,
     savedProfiles: [],
     runtime: makeDefaultRuntime(cfg.rfidTag),
@@ -850,7 +872,10 @@ export const useEmulatorStore = create<EmulatorStore>()(
       addCharger: () =>
         set((s) => {
           const next = makeDefaultSlot(nextFreeChargerIndex(s.chargers));
-          return { chargers: [...s.chargers, next], activeChargerId: next.id };
+          return {
+            chargers: [...s.chargers, next],
+            activeChargerId: next.id,
+          };
         }),
 
       removeCharger: (id) =>
@@ -878,6 +903,7 @@ export const useEmulatorStore = create<EmulatorStore>()(
           const dup: ChargerSlot = {
             id: nanoid(8),
             label: `${src.label} (copy)`,
+            connectorNames: { ...src.connectorNames },
             config: {
               ...clonedConfig,
               chargePointId: chargePointIdForIndex(index),
@@ -902,8 +928,30 @@ export const useEmulatorStore = create<EmulatorStore>()(
         }),
 
       updateChargerLabel: (id, label) =>
+        set((s) => {
+          // A blank name means "use the default". Generate one no other
+          // charger is using, so two tabs never show the same default name.
+          const name =
+            label.trim() ||
+            defaultChargerLabel(s.chargers.filter((c) => c.id !== id));
+          return {
+            chargers: updateSlot(s.chargers, id, (slot) => ({
+              ...slot,
+              label: name,
+            })),
+          };
+        }),
+
+      updateConnectorName: (id, connectorId, name) =>
         set((s) => ({
-          chargers: updateSlot(s.chargers, id, (slot) => ({ ...slot, label })),
+          chargers: updateSlot(s.chargers, id, (slot) => ({
+            ...slot,
+            // Blank = use the default "Connector N".
+            connectorNames: {
+              ...slot.connectorNames,
+              [connectorId]: name.trim(),
+            },
+          })),
         })),
 
       // ── Config ──────────────────────────────────────────────────────────────
@@ -986,7 +1034,10 @@ export const useEmulatorStore = create<EmulatorStore>()(
                   }
                 : {}),
             };
-            const newConfig = { ...slot.config, simulation: newSimulation };
+            const newConfig = {
+              ...slot.config,
+              simulation: newSimulation,
+            };
             // Re-sync MeterValuesSampledData / ConnectorPhaseRotation if measurands changed
             if (fields.measurands !== undefined) {
               newConfig.stationConfig = syncDerivedKeys(newConfig);
@@ -1001,7 +1052,10 @@ export const useEmulatorStore = create<EmulatorStore>()(
             ...slot,
             config: {
               ...slot.config,
-              vendorConfig: { ...slot.config.vendorConfig, ...fields },
+              vendorConfig: {
+                ...slot.config.vendorConfig,
+                ...fields,
+              },
             },
           })),
         })),
@@ -1010,7 +1064,10 @@ export const useEmulatorStore = create<EmulatorStore>()(
 
       setStatus: (id, status) =>
         set((s) => ({
-          chargers: updateRuntime(s.chargers, id, (r) => ({ ...r, status })),
+          chargers: updateRuntime(s.chargers, id, (r) => ({
+            ...r,
+            status,
+          })),
         })),
 
       updateConnector: (id, connId, data) =>
@@ -1068,7 +1125,10 @@ export const useEmulatorStore = create<EmulatorStore>()(
 
       clearLogs: (id) =>
         set((s) => ({
-          chargers: updateRuntime(s.chargers, id, (r) => ({ ...r, logs: [] })),
+          chargers: updateRuntime(s.chargers, id, (r) => ({
+            ...r,
+            logs: [],
+          })),
         })),
 
       setIsUploading: (id, val) =>
@@ -1195,7 +1255,12 @@ export const useEmulatorStore = create<EmulatorStore>()(
                   )
                 : [
                     ...r.deviceModel,
-                    { component, variable, value, mutability: "ReadWrite" },
+                    {
+                      component,
+                      variable,
+                      value,
+                      mutability: "ReadWrite",
+                    },
                   ],
             };
           }),
@@ -1224,7 +1289,10 @@ export const useEmulatorStore = create<EmulatorStore>()(
       // ── Live Tariff / Cost ───────────────────────────────────────────────
       setCostInfo: (id, costInfo) =>
         set((s) => ({
-          chargers: updateRuntime(s.chargers, id, (r) => ({ ...r, costInfo })),
+          chargers: updateRuntime(s.chargers, id, (r) => ({
+            ...r,
+            costInfo,
+          })),
         })),
 
       addDisplayMessage: (id, msg) =>
@@ -1258,6 +1326,7 @@ export const useEmulatorStore = create<EmulatorStore>()(
             newChargers.push({
               id,
               label,
+              connectorNames: {},
               config,
               savedProfiles: [],
               runtime: makeDefaultRuntime(config.rfidTag),
@@ -1274,6 +1343,7 @@ export const useEmulatorStore = create<EmulatorStore>()(
         chargers: s.chargers.map((c) => ({
           id: c.id,
           label: c.label,
+          connectorNames: c.connectorNames,
           config: c.config,
           savedProfiles: c.savedProfiles,
         })),
@@ -1327,7 +1397,10 @@ export const useEmulatorStore = create<EmulatorStore>()(
           return {
             ...currentState,
             chargers: [
-              { ...slot, runtime: makeDefaultRuntime(slot.config.rfidTag) },
+              {
+                ...slot,
+                runtime: makeDefaultRuntime(slot.config.rfidTag),
+              },
             ],
             activeChargerId: slot.id,
           };
@@ -1370,7 +1443,8 @@ export const useEmulatorStore = create<EmulatorStore>()(
             };
             return {
               id: c.id ?? nanoid(8),
-              label: c.label ?? "Charger",
+              label: c.label ?? "",
+              connectorNames: c.connectorNames ?? {},
               config: mergedConfig,
               savedProfiles: Array.isArray(c.savedProfiles)
                 ? c.savedProfiles
@@ -1379,6 +1453,15 @@ export const useEmulatorStore = create<EmulatorStore>()(
             };
           },
         );
+
+        // Builds that let a charger name be cleared stored "" — give those a
+        // unique default name instead of a blank tab.
+        for (const c of restoredChargers) {
+          if (!c.label.trim())
+            c.label = defaultChargerLabel(
+              restoredChargers.filter((o) => o !== c),
+            );
+        }
 
         const validChargers =
           restoredChargers.length > 0 ? restoredChargers : [makeDefaultSlot(1)];

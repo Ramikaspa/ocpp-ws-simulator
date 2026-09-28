@@ -39,7 +39,14 @@ import {
   type StopReason,
   sessionSocPct,
 } from "@/store/emulatorStore";
-import { Field, IconButton, Notice, OptionSelect, SectionHeading } from "./kit";
+import {
+  Field,
+  IconButton,
+  Notice,
+  OptionSelect,
+  RenameAction,
+  SectionHeading,
+} from "./kit";
 
 /* ──────────────────────────────────
    STATUS PRESENTATION
@@ -119,7 +126,9 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
     status: globalStatus,
     config,
     connectors,
+    connectorNames,
     updateConnector,
+    updateConnectorName,
     costInfo,
     displayMessages,
     clearDisplayMessage,
@@ -127,6 +136,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
   const connector = connectors[connectorId];
   const is2x = config.ocppVersion !== "ocpp1.6";
   const uid = useId();
+  const [renameOpen, setRenameOpen] = useState(false);
 
   const [selectedStatus, setSelectedStatus] = useState<ConnectorStatus>(
     connector?.status || "Available",
@@ -170,6 +180,8 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
     ? (connector.currentMeterValue - connector.startMeterValue) / 1000
     : 0;
   const titleId = `${uid}-title`;
+  const customName = connectorNames[connectorId]?.trim() ?? "";
+  const connectorName = customName || `Connector ${connectorId}`;
   const unplugBlocker = connector.cableLocked
     ? "Unlock the cable before unplugging."
     : inTx
@@ -216,9 +228,31 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
             )}
           />
         </div>
-        <h2 id={titleId} className="text-sm font-semibold text-t-primary">
-          Connector {connectorId}
-        </h2>
+        <div className="flex min-w-0 items-center gap-1">
+          {/* Double-click is a mouse shortcut; the Rename button is the keyboard path. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: shortcut duplicated by the Rename button */}
+          <h2
+            id={titleId}
+            onDoubleClick={() => setRenameOpen(true)}
+            className="truncate text-sm font-semibold text-t-primary"
+          >
+            {connectorName}
+            {customName && (
+              // The OCPP connector id stays visible: it is what the CSMS sees.
+              <span className="ms-1.5 font-mono text-xs font-normal text-t-muted">
+                Connector {connectorId}
+              </span>
+            )}
+          </h2>
+          <RenameAction
+            subject="connector"
+            name={connectorName}
+            maxLength={30}
+            onRename={(name) => updateConnectorName(connectorId, name)}
+            open={renameOpen}
+            onOpenChange={setRenameOpen}
+          />
+        </div>
         <Badge variant={tone}>
           <span className="sr-only">Status: </span>
           {connector.status}
