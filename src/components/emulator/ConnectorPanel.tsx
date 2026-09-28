@@ -527,53 +527,55 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
               </Button>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 @sm:grid-cols-2">
-              <div className="flex flex-col gap-2">
-                <Field label="Status to send">
+              <Field label="Status to send">
+                <div className="flex gap-1.5">
                   <OptionSelect
                     size="sm"
                     value={selectedStatus}
                     options={ALL_STATUSES}
                     onChange={setSelectedStatus}
+                    className="flex-1"
                   />
-                </Field>
-                <Button
-                  size="sm"
-                  variant="neutral"
-                  disabled={!isConnected}
-                  onClick={() =>
-                    ocppService.sendStatusNotification(
-                      connectorId,
-                      selectedStatus,
-                    )
-                  }
-                >
-                  <Send aria-hidden="true" /> Send status
-                </Button>
-              </div>
-              <div className="flex flex-col gap-2">
-                <Field label="Fault code">
+                  <Button
+                    size="sm"
+                    variant="neutral"
+                    disabled={!isConnected}
+                    onClick={() =>
+                      ocppService.sendStatusNotification(
+                        connectorId,
+                        selectedStatus,
+                      )
+                    }
+                  >
+                    <Send aria-hidden="true" /> Send
+                  </Button>
+                </div>
+              </Field>
+              <Field label="Fault code">
+                <div className="flex gap-1.5">
                   <OptionSelect
                     size="sm"
                     value={selectedErrorCode}
                     options={ERROR_CODES}
                     onChange={setSelectedErrorCode}
+                    className="flex-1"
                   />
-                </Field>
-                <Button
-                  size="sm"
-                  variant="soft-danger"
-                  disabled={!isConnected}
-                  onClick={() =>
-                    ocppService.sendStatusNotification(
-                      connectorId,
-                      "Faulted",
-                      selectedErrorCode,
-                    )
-                  }
-                >
-                  <AlertTriangle aria-hidden="true" /> Trip fault
-                </Button>
-              </div>
+                  <Button
+                    size="sm"
+                    variant="soft-danger"
+                    disabled={!isConnected}
+                    onClick={() =>
+                      ocppService.sendStatusNotification(
+                        connectorId,
+                        "Faulted",
+                        selectedErrorCode,
+                      )
+                    }
+                  >
+                    <AlertTriangle aria-hidden="true" /> Trip
+                  </Button>
+                </div>
+              </Field>
             </div>
           </div>
         </div>
@@ -608,20 +610,22 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 </Button>
               </div>
             </Field>
-            <div role="status" className="mt-2 min-h-6">
-              {authResult === "Accepted" && (
-                <Badge variant="success">
-                  <CircleCheck aria-hidden="true" />
-                  Authorization accepted
-                </Badge>
-              )}
-              {authResult === "Rejected" && (
-                <Badge variant="danger">
-                  <CircleX aria-hidden="true" />
-                  Authorization rejected
-                </Badge>
-              )}
-            </div>
+            {authResult && (
+              <div role="status" className="mt-2">
+                {authResult === "Accepted" && (
+                  <Badge variant="success">
+                    <CircleCheck aria-hidden="true" />
+                    Authorization accepted
+                  </Badge>
+                )}
+                {authResult === "Rejected" && (
+                  <Badge variant="danger">
+                    <CircleX aria-hidden="true" />
+                    Authorization rejected
+                  </Badge>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Cable */}
