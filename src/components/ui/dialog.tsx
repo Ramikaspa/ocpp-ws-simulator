@@ -1,8 +1,7 @@
 "use client";
 
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { X } from "lucide-react";
 import type * as React from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -31,7 +30,7 @@ function DialogOverlay({
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "fixed inset-0 isolate z-50 bg-black/60 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className,
       )}
       {...props}
@@ -53,7 +52,7 @@ function DialogContent({
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-none bg-background p-4 text-xs/relaxed ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "fixed top-1/2 left-1/2 z-50 grid w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-b-strong bg-surface-card p-5 text-t-primary shadow-2xl duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className,
         )}
         {...props}
@@ -65,12 +64,13 @@ function DialogContent({
             render={
               <Button
                 variant="ghost"
-                className="absolute top-2 right-2"
-                size="icon-sm"
+                className="absolute top-3.5 right-3.5 size-7 rounded-md p-0 text-t-muted hover:text-t-primary hover:bg-surface-hover transition-colors"
+                size="icon"
+                aria-label="Close dialog"
               />
             }
           >
-            <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
+            <X className="size-4" aria-hidden="true" />
             <span className="sr-only">Close</span>
           </DialogPrimitive.Close>
         )}
@@ -120,7 +120,7 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn("text-sm font-medium", className)}
+      className={cn("text-sm font-semibold text-t-primary", className)}
       {...props}
     />
   );
@@ -134,7 +134,7 @@ function DialogDescription({
     <DialogPrimitive.Description
       data-slot="dialog-description"
       className={cn(
-        "text-xs/relaxed text-muted-foreground *:[a]:underline *:[a]:underline-offset-3 *:[a]:hover:text-foreground",
+        "text-xs/relaxed text-pretty text-t-secondary *:[a]:underline *:[a]:underline-offset-3 *:[a]:hover:text-foreground",
         className,
       )}
       {...props}
