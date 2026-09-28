@@ -1,6 +1,10 @@
 "use client";
 
+import { GithubIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  Blocks,
+  ExternalLink,
   Loader2,
   LogOut,
   Power,
@@ -14,11 +18,14 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/components/emulator/AuthGate";
 import { LocalhostGuideDialog } from "@/components/emulator/LocalhostGuideDialog";
 import { ShortcutsDialog } from "@/components/emulator/ShortcutsDialog";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { useActiveCharger } from "@/hooks/useActiveCharger";
 import { cn } from "@/lib/utils";
 import type { ConnectionStatus, EmulatorConfig } from "@/store/emulatorStore";
-import { Button } from "@/components/ui/button";
 import { IconButton, OptionSelect } from "./kit";
+
+const GITHUB_URL = "https://github.com/rohittiwari-dev/ocpp-ws-simulator";
+const ECOSYSTEM_URL = "https://ocpp-ws-io.rohittiwari.me/";
 
 /* ── Status config ── */
 type StCfg = { dot: string; text: string; label: string };
@@ -248,6 +255,46 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
           </>
         )}
       </Button>
+
+      <div
+        className="h-6 w-px bg-b-strong shrink-0 hidden sm:block"
+        aria-hidden="true"
+      />
+
+      {/* ── Project links (open in a new tab) ── */}
+      <nav
+        aria-label="Project links"
+        className="flex items-center gap-1 shrink-0"
+      >
+        <a
+          href={ECOSYSTEM_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="ocpp-ws-io ecosystem (opens in a new tab)"
+          title="ocpp-ws-io ecosystem"
+          className={cn(
+            buttonVariants({ variant: "neutral", size: "sm" }),
+            "max-xl:size-8 max-xl:px-0",
+          )}
+        >
+          <Blocks aria-hidden="true" />
+          <span className="hidden xl:inline">ocpp-ws-io</span>
+          <ExternalLink
+            aria-hidden="true"
+            className="hidden xl:block size-3! text-t-muted"
+          />
+        </a>
+        <a
+          href={GITHUB_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="GitHub repository (opens in a new tab)"
+          title="View source on GitHub"
+          className={buttonVariants({ variant: "neutral", size: "icon" })}
+        >
+          <HugeiconsIcon icon={GithubIcon} strokeWidth={2} aria-hidden="true" />
+        </a>
+      </nav>
 
       {/* ── Shortcuts ── */}
       <ShortcutsDialog />
