@@ -6,13 +6,15 @@ import { ConnectorPanel } from "./ConnectorPanel";
 export function ConnectorsView() {
   const { config } = useActiveCharger();
 
+  // Sized by the space the panel actually has (container queries), so the
+  // layout holds up whether or not the config sidebar is open.
   return (
-    <div className="flex-1">
+    <div className="@container flex-1">
       <div
         className={`grid gap-5 ${
           config.numberOfConnectors === 2
-            ? "grid-cols-1 lg:grid-cols-2"
-            : "grid-cols-1 max-w-2xl"
+            ? "grid-cols-1 @6xl:grid-cols-2"
+            : "grid-cols-1 max-w-5xl"
         }`}
       >
         <ConnectorPanel connectorId={1} />

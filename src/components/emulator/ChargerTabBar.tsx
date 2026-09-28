@@ -1,15 +1,19 @@
 "use client";
 
 import { Copy, Loader2, Plus, Wifi, WifiOff, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { removeService } from "@/lib/ocppClient";
+import { cn } from "@/lib/utils";
 import { useEmulatorStore } from "@/store/emulatorStore";
+import { ConfirmAction, IconButton } from "./kit";
 
 /* ─── helpers ─────────────────────────────────────────────────── */
-const STATUS_DOT: Record<string, string> = {
-  connected: "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]",
-  connecting: "bg-amber-400 animate-pulse",
-  faulted: "bg-red-400",
-  disconnected: "bg-slate-600",
+const STATUS: Record<string, { dot: string; label: string }> = {
+  connected: { dot: "bg-success", label: "connected" },
+  connecting: { dot: "bg-warning", label: "connecting" },
+  faulted: { dot: "bg-danger", label: "faulted" },
+  disconnected: { dot: "bg-t-muted", label: "disconnected" },
 };
 
 /* ─── ChargerTabBar ───────────────────────────────────────────── */
@@ -23,94 +27,111 @@ export function ChargerTabBar() {
     duplicateCharger,
   } = useEmulatorStore();
 
+  const activeIdx = chargers.findIndex((c) => c.id === activeChargerId);
+  const active = chargers[activeIdx];
+  const activeLabel = active
+    ? active.label || `Charger ${activeIdx + 1}`
+    : "charger";
+
   return (
-    <div className="flex items-center gap-1 px-3 py-1.5 bg-[#13151f] border-b border-[#1e2030] overflow-x-auto custom-scrollbar shrink-0">
-      {/* Charger Tabs */}
-      {chargers.map((slot, idx) => {
-        const isActive = slot.id === activeChargerId;
-        const statusDot =
-          STATUS_DOT[slot.runtime.status] ?? STATUS_DOT.disconnected;
+    <nav
+      aria-label="Chargers"
+      className="flex items-center gap-2 px-3 py-2 bg-surface-inset border-b border-b-subtle overflow-x-auto custom-scrollbar shrink-0"
+    >
+      {/* shadcn Tabs (Base UI): arrow keys and Home/End switch chargers */}
+      <Tabs
+        value={activeChargerId}
+        onValueChange={(v) => setActiveCharger(String(v))}
+      >
+        <TabsList
+          aria-label="Chargers"
+          activateOnFocus
+          className="h-auto bg-transparent p-0"
+        >
+          {chargers.map((slot, idx) => {
+            const isActive = slot.id === activeChargerId;
+            const st = STATUS[slot.runtime.status] ?? STATUS.disconnected;
+            return (
+              <TabsTrigger
+                key={slot.id}
+                value={slot.id}
+                className="min-w-30 max-w-60 flex-none justify-start font-medium"
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn("size-2 shrink-0 rounded-full", st.dot)}
+                />
+                <span className="flex-1 truncate text-left">
+                  {slot.label || `Charger ${idx + 1}`}
+                </span>
+                <span className="sr-only">, {st.label}</span>
+                {isActive && (
+                  <span className="hidden sm:block truncate font-mono text-2xs font-normal text-t-muted max-w-24">
+                    {slot.config.chargePointId}
+                  </span>
+                )}
+                {slot.runtime.status === "connected" ? (
+                  <Wifi className="text-success" aria-hidden="true" />
+                ) : slot.runtime.status === "connecting" ? (
+                  <Loader2
+                    className="text-warning animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <WifiOff className="text-t-muted" aria-hidden="true" />
+                )}
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+      </Tabs>
 
-        return (
-          <div
-            key={slot.id}
-            className={`group flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer select-none transition-all duration-150 text-[12px] font-medium whitespace-nowrap min-w-[120px] max-w-[200px] border ${
-              isActive
-                ? "bg-[#1e2235] border-[#8b5cf6]/40 text-white shadow-[0_0_12px_rgba(139,92,246,0.12)]"
-                : "bg-transparent border-transparent text-t-muted hover:bg-surface-inset hover:text-t-primary"
-            }`}
-            onClick={() => setActiveCharger(slot.id)}
-          >
-            {/* Status dot */}
-            <span
-              className={`shrink-0 w-1.5 h-1.5 rounded-full ${statusDot}`}
-            />
+      {/* Actions for the selected charger — always visible, not hover-only */}
+      <div className="flex items-center gap-0.5 shrink-0">
+        <IconButton
+          label={`Duplicate ${activeLabel}`}
+          size="icon-sm"
+          onClick={() => active && duplicateCharger(active.id)}
+        >
+          <Copy aria-hidden="true" />
+        </IconButton>
+        {chargers.length > 1 && active && (
+          <ConfirmAction
+            title={`Remove ${activeLabel}?`}
+            description="The charger disconnects from the CSMS and its configuration and logs are deleted. This can't be undone."
+            confirmLabel="Remove charger"
+            onConfirm={() => {
+              // Drop the socket and timers before the slot disappears —
+              // otherwise the charge point stays connected to the CSMS
+              // with no tab left to disconnect it.
+              removeService(active.id);
+              removeCharger(active.id);
+            }}
+            trigger={
+              <IconButton
+                label={`Remove ${activeLabel}`}
+                size="icon-sm"
+                className="hover:text-danger"
+              >
+                <X aria-hidden="true" />
+              </IconButton>
+            }
+          />
+        )}
+      </div>
 
-            {/* Label */}
-            <span className="flex-1 truncate">
-              {slot.label || `Charger ${idx + 1}`}
-            </span>
-
-            {/* CPID (only when active) */}
-            {isActive && (
-              <span className="hidden sm:block text-[9px] font-mono text-t-faint truncate max-w-[60px]">
-                {slot.config.chargePointId}
-              </span>
-            )}
-
-            {/* Connection state icon */}
-            <span className="shrink-0">
-              {slot.runtime.status === "connected" ? (
-                <Wifi className="h-3 w-3 text-emerald-400" />
-              ) : slot.runtime.status === "connecting" ? (
-                <Loader2 className="h-3 w-3 text-amber-400 animate-spin" />
-              ) : (
-                <WifiOff className="h-3 w-3 text-t-faint" />
-              )}
-            </span>
-
-            {/* Context actions (visible on hover when active) */}
-            {isActive && chargers.length > 1 && (
-              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    duplicateCharger(slot.id);
-                  }}
-                  title="Duplicate charger"
-                  className="p-0.5 rounded text-t-muted hover:text-t-primary hover:bg-surface-hover transition-colors cursor-pointer"
-                >
-                  <Copy className="h-2.5 w-2.5" />
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    // Drop the socket and timers before the slot disappears —
-                    // otherwise the charge point stays connected to the CSMS
-                    // with no tab left to disconnect it.
-                    removeService(slot.id);
-                    removeCharger(slot.id);
-                  }}
-                  title="Remove charger"
-                  className="p-0.5 rounded text-t-muted hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
-                >
-                  <X className="h-2.5 w-2.5" />
-                </button>
-              </div>
-            )}
-          </div>
-        );
-      })}
+      <div className="h-5 w-px bg-b-strong shrink-0" aria-hidden="true" />
 
       {/* Add Charger */}
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={() => addCharger()}
-        title="Add charger"
-        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-t-muted hover:text-white hover:bg-surface-hover border border-transparent hover:border-b-default transition-all cursor-pointer shrink-0"
+        title="Add charger (Alt+C)"
       >
-        <Plus className="h-3.5 w-3.5" />
-        <span className="hidden sm:block">Add</span>
-      </button>
-    </div>
+        <Plus aria-hidden="true" />
+        Add charger
+      </Button>
+    </nav>
   );
 }

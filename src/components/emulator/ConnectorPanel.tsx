@@ -5,210 +5,68 @@ import {
   AlertTriangle,
   Banknote,
   Battery,
-  Bolt,
+  Cable,
   CalendarCheck,
-  ChevronDown,
+  CircleCheck,
+  CircleX,
   Clock,
   Gauge,
+  Lock,
+  LockOpen,
   MessageSquare,
   Play,
   PlugZap,
+  Plus,
   PowerOff,
-  Radio,
   Send,
-  Settings,
   ShieldCheck,
   Square,
-  Unlock,
+  Unplug,
   Wrench,
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useId, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { useActiveCharger } from "@/hooks/useActiveCharger";
 import { ocppService } from "@/lib/ocppClient";
+import { cn } from "@/lib/utils";
 import {
   type ConnectorStatus,
   type StopReason,
   sessionSocPct,
 } from "@/store/emulatorStore";
+import { Field, IconButton, Notice, OptionSelect, SectionHeading } from "./kit";
 
 /* ──────────────────────────────────
-   BASE UI COMPONENTS
+   STATUS PRESENTATION
+   Every status is shown as text; colour only reinforces it.
    ────────────────────────────────── */
-function MiniSelect<T extends string>({
-  value,
-  options,
-  onChange,
-  icon,
-  label,
-}: {
-  value: T;
-  options: T[];
-  onChange: (v: T) => void;
-  icon?: React.ReactNode;
-  label?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [rect, setRect] = useState<DOMRect | null>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
 
-  const openDropdown = () => {
-    if (btnRef.current) setRect(btnRef.current.getBoundingClientRect());
-    setOpen(true);
-  };
+type Tone = "success" | "info" | "brand" | "warning" | "neutral" | "danger";
 
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const close = () => setOpen(false);
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-
-  const dropdown =
-    open && rect
-      ? createPortal(
-          <div
-            onMouseDown={(e) => e.stopPropagation()}
-            style={{
-              position: "fixed",
-              top: rect.bottom + 4,
-              left: rect.left,
-              width: rect.width,
-              zIndex: 9999,
-            }}
-            className="rounded-md py-1.5 max-h-52 overflow-y-auto custom-scrollbar shadow-[0_12px_32px_rgba(0,0,0,0.8)] bg-[#1d1f2b] border border-[#383e50] animate-in fade-in zoom-in-95 duration-100"
-          >
-            {options.map((opt) => (
-              <button
-                key={opt}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-                onClick={() => {
-                  onChange(opt);
-                  setOpen(false);
-                }}
-                className={`w-full flex items-center justify-start px-3 py-1.5 text-[11px] cursor-pointer transition-colors ${
-                  opt === value
-                    ? "text-[#8b5cf6] bg-[#1e1535]"
-                    : "text-[#a0a8b8] hover:text-[#f0f2f5] hover:bg-[#252838]"
-                }`}
-              >
-                {opt}
-              </button>
-            ))}
-          </div>,
-          document.body,
-        )
-      : null;
-
-  return (
-    <div className="flex flex-col gap-1 w-full">
-      {label && (
-        <span className="text-[9px] font-bold uppercase tracking-widest text-[#5d6577]">
-          {label}
-        </span>
-      )}
-      <button
-        ref={btnRef}
-        onClick={openDropdown}
-        className="w-full flex items-center justify-between gap-1.5 px-3 h-9 rounded-md font-medium cursor-pointer transition-all bg-[#1d1f2b] border border-[#282b3a] text-[#a0a8b8] hover:bg-[#252838] hover:text-[#f0f2f5] hover:border-[#383e50] text-[11px]"
-      >
-        <span className="flex items-center gap-2 text-left shrink truncate">
-          {icon}
-          <span className="truncate">{value}</span>
-        </span>
-        <ChevronDown
-          className={`h-3 w-3 shrink-0 text-[#5d6577] transition-transform ${
-            open ? "rotate-180" : ""
-          }`}
-        />
-      </button>
-      {dropdown}
-    </div>
-  );
-}
-
-/* ──────────────────────────────────
-   CONFIG / THEME Maps
-   ────────────────────────────────── */
-type StatusCfg = {
-  dot: string;
-  accent: string;
-  badgeBg: string;
-  text: string;
-  ring: string;
+const STATUS_TONE: Record<ConnectorStatus, Tone> = {
+  Available: "success",
+  Preparing: "info",
+  Charging: "brand",
+  SuspendedEV: "warning",
+  SuspendedEVSE: "warning",
+  Finishing: "info",
+  Reserved: "warning",
+  Unavailable: "neutral",
+  Faulted: "danger",
 };
 
-const SC: Record<ConnectorStatus, StatusCfg> = {
-  Available: {
-    dot: "#22c55e",
-    accent: "#22c55e",
-    badgeBg: "rgba(34,197,94,0.1)",
-    text: "#4ade80",
-    ring: "rgba(34,197,94,0.25)",
-  },
-  Preparing: {
-    dot: "#38bdf8",
-    accent: "#38bdf8",
-    badgeBg: "rgba(56,189,248,0.1)",
-    text: "#7dd3fc",
-    ring: "rgba(56,189,248,0.25)",
-  },
-  Charging: {
-    dot: "#8b5cf6",
-    accent: "#8b5cf6",
-    badgeBg: "rgba(139,92,246,0.1)",
-    text: "#c4b5fd",
-    ring: "rgba(139,92,246,0.25)",
-  },
-  SuspendedEV: {
-    dot: "#a78bfa",
-    accent: "#a78bfa",
-    badgeBg: "rgba(167,139,250,0.1)",
-    text: "#c4b5fd",
-    ring: "rgba(167,139,250,0.25)",
-  },
-  SuspendedEVSE: {
-    dot: "#a78bfa",
-    accent: "#a78bfa",
-    badgeBg: "rgba(167,139,250,0.1)",
-    text: "#c4b5fd",
-    ring: "rgba(167,139,250,0.25)",
-  },
-  Finishing: {
-    dot: "#60a5fa",
-    accent: "#60a5fa",
-    badgeBg: "rgba(96,165,250,0.1)",
-    text: "#93c5fd",
-    ring: "rgba(96,165,250,0.25)",
-  },
-  Reserved: {
-    dot: "#fbbf24",
-    accent: "#f59e0b",
-    badgeBg: "rgba(245,158,11,0.1)",
-    text: "#fde68a",
-    ring: "rgba(245,158,11,0.25)",
-  },
-  Unavailable: {
-    dot: "#6b7280",
-    accent: "#4b5563",
-    badgeBg: "rgba(107,114,128,0.1)",
-    text: "#9ca3af",
-    ring: "rgba(107,114,128,0.25)",
-  },
-  Faulted: {
-    dot: "#f43f5e",
-    accent: "#f43f5e",
-    badgeBg: "rgba(244,63,94,0.1)",
-    text: "#fda4af",
-    ring: "rgba(244,63,94,0.25)",
-  },
+const STATUS_DOT: Record<Tone, string> = {
+  success: "bg-success",
+  info: "bg-info",
+  brand: "bg-brand",
+  warning: "bg-warning",
+  neutral: "bg-t-muted",
+  danger: "bg-danger",
 };
 
 const STOP_REASONS: StopReason[] = [
@@ -268,20 +126,15 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
   } = useActiveCharger();
   const connector = connectors[connectorId];
   const is2x = config.ocppVersion !== "ocpp1.6";
+  const uid = useId();
 
   const [selectedStatus, setSelectedStatus] = useState<ConnectorStatus>(
     connector?.status || "Available",
   );
   const [selectedErrorCode, setSelectedErrorCode] = useState("InternalError");
   const [customMeterStep, setCustomMeterStep] = useState<number>(10);
-
-  // ── NEW: direct meter value setter ──
   const [meterSetInput, setMeterSetInput] = useState<string>("");
-
-  // ── NEW: maintenance mode local toggle ──
   const [inMaintenance, setInMaintenance] = useState(false);
-
-  // ── Auth feedback ──
   const [authResult, setAuthResult] = useState<
     null | "Accepted" | "Rejected" | "loading"
   >(null);
@@ -309,15 +162,20 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
   if (!connector) return null;
 
   const isConnected = globalStatus === "connected";
-  const st = SC[connector.status];
+  const tone = STATUS_TONE[connector.status];
   const inTx = connector.inTransaction;
   // Same SoC the MeterValues carry: session energy over the configured target.
   const socPct = inTx ? sessionSocPct(connector, config.simulation) : 0;
   const sessionKWh = inTx
     ? (connector.currentMeterValue - connector.startMeterValue) / 1000
     : 0;
+  const titleId = `${uid}-title`;
+  const unplugBlocker = connector.cableLocked
+    ? "Unlock the cable before unplugging."
+    : inTx
+      ? "Stop the transaction before unplugging."
+      : null;
 
-  // Set meter value handler
   const handleSetMeter = () => {
     const val = parseFloat(meterSetInput);
     if (!Number.isNaN(val) && val >= 0) {
@@ -342,259 +200,241 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
   };
 
   return (
-    <div className="relative flex flex-col rounded-xl overflow-hidden bg-[#181a24] border border-[#282b3a] shadow-lg transition-colors h-full">
-      {/* Dynamic top bar accent */}
-      <div
-        className="absolute top-0 inset-x-0 opacity-30! h-px z-10"
-        style={{
-          background: inTx
-            ? `linear-gradient(90deg, ${st.accent}, ${st.accent}80)`
-            : st.accent,
-          opacity: inTx ? 1 : 0.8,
-        }}
-      />
-
+    <section
+      aria-labelledby={titleId}
+      className="@container flex h-full flex-col overflow-hidden rounded-xl border border-b-default bg-surface-card shadow-lg"
+    >
       {/* ── HEADER ── */}
-      <div className="flex items-center gap-3 px-3 py-2.5 border-b border-[#232636] bg-[#1d1f2b]">
-        {/* Icon */}
-        <div className="relative shrink-0 flex items-center justify-center w-8 h-8 rounded-md border border-[#232636] bg-[#121420]">
-          <PlugZap
-            className={`h-4 w-4 ${inTx ? "animate-pulse" : ""}`}
-            style={{
-              color: st.accent,
-              filter: inTx ? `drop-shadow(0 0 6px ${st.accent})` : "none",
-            }}
-          />
-          <div
-            className="absolute -bottom-1 -right-1 w-2.5 h-2.5 rounded-full border-2 border-[#1d1f2b]"
-            style={{ background: st.dot }}
-          />
-        </div>
-
-        {/* All metadata inline */}
-        <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
-          <span className="text-[13px] font-bold text-white leading-none tracking-tight shrink-0">
-            Connector {connectorId}
-          </span>
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-b-subtle bg-surface-elevated px-4 py-3">
+        <div className="relative flex size-9 shrink-0 items-center justify-center rounded-lg border border-b-strong bg-surface-inset">
+          <PlugZap className="size-4 text-t-secondary" aria-hidden="true" />
           <span
-            className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border shrink-0"
-            style={{
-              backgroundColor: st.badgeBg,
-              color: st.text,
-              borderColor: st.ring,
-            }}
-          >
-            {connector.status}
-          </span>
-          {inMaintenance && (
-            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border border-amber-500/40 bg-amber-500/10 text-amber-400 flex items-center gap-1 shrink-0">
-              <Wrench className="h-2.5 w-2.5" /> Maint
-            </span>
-          )}
+            aria-hidden="true"
+            className={cn(
+              "absolute -right-1 -bottom-1 size-3 rounded-full border-2 border-surface-elevated",
+              STATUS_DOT[tone],
+            )}
+          />
+        </div>
+        <h2 id={titleId} className="text-sm font-semibold text-t-primary">
+          Connector {connectorId}
+        </h2>
+        <Badge variant={tone}>
+          <span className="sr-only">Status: </span>
+          {connector.status}
+        </Badge>
+        {inMaintenance && (
+          <Badge variant="warning">
+            <Wrench aria-hidden="true" />
+            Maintenance
+          </Badge>
+        )}
+        <div className="ms-auto">
           {inTx ? (
-            <span className="flex items-center gap-1 text-[10px] font-mono text-[#c4b5fd] px-1.5 py-0.5 rounded bg-[#1e1535] border border-[#5b21b6] leading-none shrink-0">
-              <Zap className="h-2.5 w-2.5" /> TX:
-              {connector.transactionId}
-            </span>
+            <Badge className="font-mono" variant="brand">
+              <Zap aria-hidden="true" />
+              Transaction {connector.transactionId}
+            </Badge>
           ) : connector.reservation ? (
-            <span className="flex items-center gap-1 text-[10px] font-mono text-[#fcd34d] px-1.5 py-0.5 rounded bg-[#382b0e] border border-[#7a5a1a] leading-none shrink-0">
-              <CalendarCheck className="h-2.5 w-2.5" /> RSV:
-              {connector.reservation.reservationId}
-            </span>
+            <Badge className="font-mono" variant="warning">
+              <CalendarCheck aria-hidden="true" />
+              Reservation {connector.reservation.reservationId}
+            </Badge>
           ) : (
-            <span className="text-[10px] text-[#5d6577] uppercase tracking-wide leading-none">
-              Idle
-            </span>
+            <span className="text-xs text-t-muted">No active session</span>
           )}
         </div>
-      </div>
+      </header>
 
-      {/* ── SPLIT BODY ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-[#232636] flex-1">
-        {/* LEFT PANE: Auth → Cable → Transaction → Energy */}
-        <div className="flex flex-col bg-[#0f1117]">
-          {/* Energy Hub */}
-          <div className="p-3 flex flex-col flex-1">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5d6577]">
-                Active Session Energy
-              </span>
-              {inTx && (
-                <button
+      {!isConnected && (
+        <Notice className="mx-4 mt-3">
+          Not connected to a CSMS. Connect from the header to send OCPP
+          messages. You can still edit the meter, ID tag and stop reason.
+        </Notice>
+      )}
+
+      {/* ── BODY ── */}
+      <div className="grid flex-1 grid-cols-1 @2xl:grid-cols-2">
+        {/* LEFT: session metering, then status & fault testing */}
+        <div className="@container flex flex-col divide-y divide-b-subtle @2xl:border-e @2xl:border-b-subtle">
+          <div className="p-4">
+            <SectionHeading
+              icon={<Gauge aria-hidden="true" />}
+              action={
+                <Button
+                  size="sm"
+                  variant="soft-brand"
+                  disabled={!inTx || !isConnected}
                   onClick={() => ocppService.sendMeterValues(connectorId)}
-                  className="flex items-center gap-1 text-[9px] font-bold text-[#8b5cf6] hover:text-[#c4b5fd] px-2 py-0.5 rounded hover:bg-[#1e1535] transition-colors cursor-pointer"
                 >
-                  <Gauge className="h-3 w-3" /> Push
-                </button>
-              )}
-            </div>
+                  <Send aria-hidden="true" /> Send MeterValues
+                </Button>
+              }
+            >
+              Session energy
+            </SectionHeading>
 
-            {/* Big readout */}
-            <div className="flex items-baseline flex-1 min-w-0 border-b border-[#232636] pb-1 mb-2">
+            {/* Meter register readout — editable during a transaction */}
+            <div className="flex items-baseline gap-2 border-b border-b-strong pb-1">
               <Input
+                aria-label="Energy register in watt-hours"
+                inputMode="decimal"
                 value={connector.currentMeterValue}
-                disabled={!inTx}
+                readOnly={!inTx}
                 onChange={(e) =>
                   updateConnector(connectorId, {
                     currentMeterValue: Number(e.target.value),
                   })
                 }
-                className={`w-full h-auto bg-transparent border-none p-0 text-[36px] md:text-[42px] font-black font-mono tracking-tighter leading-none focus-visible:ring-0 shadow-none disabled:opacity-100 ${
-                  inTx ? "text-white" : "text-[#383e50]"
-                }`}
+                className={cn(
+                  "h-auto border-0 bg-transparent px-0 py-0 font-mono text-4xl font-bold tracking-tight tabular-nums",
+                  inTx ? "text-t-primary" : "[[readonly]]:text-t-secondary",
+                )}
               />
-              <span
-                className={`text-[13px] font-bold uppercase ml-2 ${
-                  inTx ? "text-[#8b5cf6]" : "text-[#383e50]"
-                }`}
-              >
-                Wh
-              </span>
+              <span className="text-sm font-semibold text-t-muted">Wh</span>
             </div>
+            <p className="mt-1 text-2xs text-t-muted">
+              {inTx
+                ? `Started at ${Math.round(connector.startMeterValue)} Wh`
+                : "Carried over as meterStart for the next transaction"}
+            </p>
 
-            {/* Set Meter row */}
-            <div className="flex items-center gap-1.5 bg-[#181a24] p-1.5 rounded-lg border border-[#232636]">
-              <span className="text-[8px] font-bold text-[#5d6577] uppercase tracking-widest shrink-0">
-                Set&nbsp;→
-              </span>
-              <input
-                value={meterSetInput}
-                placeholder="e.g. 5000"
-                onChange={(e) => setMeterSetInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSetMeter()}
-                className="flex-1 h-7 px-2 text-[11px] font-mono text-white bg-[#121420] border border-[#282b3a] rounded outline-none placeholder:text-[#383e50] focus:border-[#8b5cf6] transition-all min-w-0"
-              />
-              <button
-                onClick={handleSetMeter}
-                className="h-7 px-2.5 rounded text-[10px] font-bold text-[#c4b5fd] bg-[#1e1535] hover:bg-[#115e56] transition-colors cursor-pointer shrink-0 border border-[#5b21b6]"
-              >
-                Set
-              </button>
-            </div>
-
-            {/* Add step row — during tx only */}
-            {inTx && (
-              <div className="flex items-center gap-1.5 mt-1.5 bg-[#181a24] p-1.5 rounded-lg border border-[#232636]">
-                <span className="text-[8px] font-bold text-[#5d6577] uppercase tracking-widest shrink-0">
-                  Add&nbsp;+
+            {/* State of charge */}
+            <div className="mt-4">
+              <div className="flex items-center justify-between text-xs">
+                <span
+                  id={`${uid}-soc`}
+                  className="flex items-center gap-1.5 font-semibold text-t-secondary"
+                >
+                  <Battery className="size-3.5" aria-hidden="true" />
+                  State of charge {socPct.toFixed(1)}%
                 </span>
-                <Input
-                  value={customMeterStep}
-                  onChange={(e) =>
-                    setCustomMeterStep(Number(e.target.value) || 0)
-                  }
-                  className="h-7 max-w-15 text-center bg-[#121420] border-[#282b3a] font-mono text-[12px] text-white focus-visible:ring-1 focus-visible:ring-[#8b5cf6]"
-                />
-                <button
-                  onClick={() =>
-                    updateConnector(connectorId, {
-                      currentMeterValue:
-                        connector.currentMeterValue + customMeterStep,
-                    })
-                  }
-                  className="h-7 px-2.5 rounded text-[10px] font-bold text-[#8b5cf6] bg-[#1e1535] hover:bg-[#115e56] hover:text-[#c4b5fd] transition-colors cursor-pointer flex-1"
-                >
-                  Add Wh
-                </button>
-                <div className="w-px h-5 bg-[#282b3a]" />
-                <button
-                  onClick={() => ocppService.sendMeterValues(connectorId)}
-                  className="h-7 px-2.5 rounded btn-primary text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1 cursor-pointer shrink-0"
-                >
-                  <Gauge className="h-3 w-3" /> Push
-                </button>
+                <span className="font-mono text-t-muted">
+                  {sessionKWh.toFixed(2)} /{" "}
+                  {config.simulation.autoChargeTargetKWh} kWh
+                </span>
               </div>
-            )}
-
-            {/* SoC progress */}
-            <div
-              className={`mt-3 flex items-center justify-between text-[9px] font-bold uppercase tracking-widest ${
-                inTx ? "text-[#a0a8b8]" : "text-[#383e50]"
-              }`}
-            >
-              <span className="flex items-center gap-1">
-                <Battery className="h-3 w-3" /> SoC {socPct.toFixed(1)}%
-              </span>
-              <span className="font-mono normal-case tracking-normal">
-                {sessionKWh.toFixed(2)} /{" "}
-                {config.simulation.autoChargeTargetKWh} kWh
-              </span>
-            </div>
-            <div
-              className={`mt-1.5 h-1.5 w-full rounded-full bg-[#1d1f2b] overflow-hidden transition-opacity duration-300 ${
-                inTx ? "opacity-100" : "opacity-30"
-              }`}
-            >
-              <div
-                className="h-full rounded-full transition-all duration-700 ease-out"
-                style={{
-                  width: `${socPct}%`,
-                  background: inTx ? st.accent : "#5d6577",
-                  boxShadow: inTx ? `0 0 12px ${st.accent}` : "none",
-                }}
+              <Progress
+                value={Number(socPct.toFixed(1))}
+                aria-labelledby={`${uid}-soc`}
+                className="mt-1.5"
               />
+            </div>
+
+            {/* Manual meter controls */}
+            <div className="mt-4 grid grid-cols-1 gap-3 @sm:grid-cols-2">
+              <Field label="Set register (Wh)" htmlFor={`${uid}-set`}>
+                <div className="flex gap-1.5">
+                  <Input
+                    id={`${uid}-set`}
+                    inputMode="decimal"
+                    value={meterSetInput}
+                    placeholder="e.g. 5000"
+                    onChange={(e) => setMeterSetInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSetMeter()}
+                    className="h-8 font-mono"
+                  />
+                  <Button
+                    size="sm"
+                    variant="soft-brand"
+                    onClick={handleSetMeter}
+                    disabled={meterSetInput.trim() === ""}
+                  >
+                    Set
+                  </Button>
+                </div>
+              </Field>
+              <Field label="Add energy (Wh)" htmlFor={`${uid}-add`}>
+                <div className="flex gap-1.5">
+                  <Input
+                    id={`${uid}-add`}
+                    inputMode="decimal"
+                    value={customMeterStep}
+                    disabled={!inTx}
+                    onChange={(e) =>
+                      setCustomMeterStep(Number(e.target.value) || 0)
+                    }
+                    className="h-8 font-mono"
+                  />
+                  <Button
+                    size="sm"
+                    variant="soft-brand"
+                    disabled={!inTx}
+                    onClick={() =>
+                      updateConnector(connectorId, {
+                        currentMeterValue:
+                          connector.currentMeterValue + customMeterStep,
+                      })
+                    }
+                  >
+                    <Plus aria-hidden="true" /> Add
+                  </Button>
+                </div>
+              </Field>
             </div>
 
             {/* Live Tariff / Cost */}
             {costInfo && (
-              <div className="mt-3 bg-[#181a24] p-2 rounded-lg border border-emerald-500/20">
-                <div className="flex items-center justify-between">
-                  <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-emerald-400">
-                    <Banknote className="w-3 h-3" /> Latest Session Cost
+              <div className="mt-4 rounded-lg border border-success/30 bg-success/5 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-success">
+                    <Banknote className="size-3.5" aria-hidden="true" /> Latest
+                    session cost
                   </span>
-                  <span className="text-[12px] font-mono font-bold text-white">
+                  <span className="font-mono text-sm font-bold text-t-primary">
                     {costInfo.totalCost} {costInfo.currency}
                   </span>
                 </div>
                 {costInfo.message && (
-                  <div className="text-[9px] text-[#a0a8b8] mt-1 italic">
+                  <p className="mt-1 text-xs text-t-secondary">
                     {costInfo.message}
-                  </div>
+                  </p>
                 )}
               </div>
             )}
 
             {/* Display Messages */}
             {displayMessages.length > 0 && (
-              <div className="mt-2 space-y-1.5">
+              <ul className="mt-4 space-y-2" aria-label="Display messages">
                 {displayMessages.slice(0, 3).map((msg) => (
-                  <div
+                  <li
                     key={msg.id}
-                    className="flex flex-col gap-1 p-2 rounded-md bg-[#1d1f2b] border border-[#282b3a] group relative"
+                    className="rounded-lg border border-b-default bg-surface-elevated p-3"
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="flex flex-1 items-center gap-1 text-[8px] font-bold uppercase tracking-widest text-[#8b5cf6]">
-                        <MessageSquare className="w-2.5 h-2.5" />
-                        {msg.priority} MSG
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-brand">
+                        <MessageSquare
+                          className="size-3.5"
+                          aria-hidden="true"
+                        />
+                        {msg.priority} message
                       </span>
-                      <button
+                      <IconButton
+                        label="Dismiss message"
+                        className="size-7"
                         onClick={() => clearDisplayMessage(msg.id)}
-                        className="text-[#5d6577] hover:text-[#fda4af] transition-colors"
                       >
-                        <X className="w-3 h-3" />
-                      </button>
+                        <X aria-hidden="true" />
+                      </IconButton>
                     </div>
-                    <p className="text-[10px] text-white wrap-break-word">
+                    <p className="mt-1 text-xs text-t-primary wrap-break-word">
                       {msg.message}
                     </p>
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
           </div>
 
-          {/* Testing & Diagnostics — combined */}
-          <div className="p-3 flex-1 bg-[#121420]">
-            <div className="flex items-center justify-between mb-2 border-b border-[#282b3a] pb-2">
-              <span className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-[#8b5cf6]">
-                <AlertTriangle className="w-3.5 h-3.5" /> Testing & Diagnostics
-              </span>
-              <Settings className="h-3 w-3 text-[#5d6577]" />
-            </div>
-
-            {/* Quick actions row */}
-            <div className="grid grid-cols-2 gap-1.5 mb-3">
-              <button
+          {/* Status & fault testing */}
+          <div className="flex-1 bg-surface-inset/60 p-4">
+            <SectionHeading icon={<AlertTriangle aria-hidden="true" />}>
+              Status &amp; fault testing
+            </SectionHeading>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                size="sm"
+                variant="neutral"
                 disabled={!isConnected}
                 onClick={() =>
                   ocppService.sendStatusNotification(
@@ -602,31 +442,33 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                     connector.status,
                   )
                 }
-                className="h-7 rounded bg-[#1f2231] hover:bg-[#282b3a] border border-[#282b3a] text-[#a0a8b8] hover:text-white text-[9px] font-bold uppercase tracking-widest flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
               >
-                <Activity className="h-3 w-3" /> Ping Status
-              </button>
-              <button
+                <Activity aria-hidden="true" /> Resend status
+              </Button>
+              <Button
+                size="sm"
+                variant="neutral"
                 disabled={!isConnected}
                 onClick={() =>
                   ocppService.sendStatusNotification(connectorId, "Unavailable")
                 }
-                className="h-7 rounded bg-[#1f2231] hover:bg-[#282b3a] border border-[#282b3a] text-[#a0a8b8] hover:text-white text-[9px] font-bold uppercase tracking-widest flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
               >
-                <PowerOff className="h-3 w-3" /> Offline
-              </button>
+                <PowerOff aria-hidden="true" /> Send Unavailable
+              </Button>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              {/* Status override */}
-              <div className="flex flex-col gap-2 mb-3">
-                <MiniSelect
-                  label="Override Status"
-                  value={selectedStatus}
-                  options={ALL_STATUSES}
-                  onChange={(v) => setSelectedStatus(v as ConnectorStatus)}
-                  icon={<Activity className="h-3 w-3 text-[#5d6577]" />}
-                />
-                <button
+            <div className="mt-3 grid grid-cols-1 gap-3 @sm:grid-cols-2">
+              <div className="flex flex-col gap-2">
+                <Field label="Status to send">
+                  <OptionSelect
+                    size="sm"
+                    value={selectedStatus}
+                    options={ALL_STATUSES}
+                    onChange={setSelectedStatus}
+                  />
+                </Field>
+                <Button
+                  size="sm"
+                  variant="neutral"
                   disabled={!isConnected}
                   onClick={() =>
                     ocppService.sendStatusNotification(
@@ -634,22 +476,22 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       selectedStatus,
                     )
                   }
-                  className="h-8 w-full rounded-md btn-ghost border-[#282b3a] bg-[#1d1f2b] text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 text-[#a0a8b8] hover:text-[#c4b5fd] hover:border-[#c4b5fd] transition-colors"
                 >
-                  <Send className="h-3 w-3" /> Push Status
-                </button>
+                  <Send aria-hidden="true" /> Send status
+                </Button>
               </div>
-
-              {/* Fault injection */}
               <div className="flex flex-col gap-2">
-                <MiniSelect
-                  label="Inject Fault Code"
-                  value={selectedErrorCode}
-                  options={ERROR_CODES}
-                  onChange={(v) => setSelectedErrorCode(v)}
-                  icon={<AlertTriangle className="h-3 w-3 text-[#5d6577]" />}
-                />
-                <button
+                <Field label="Fault code">
+                  <OptionSelect
+                    size="sm"
+                    value={selectedErrorCode}
+                    options={ERROR_CODES}
+                    onChange={setSelectedErrorCode}
+                  />
+                </Field>
+                <Button
+                  size="sm"
+                  variant="soft-danger"
                   disabled={!isConnected}
                   onClick={() =>
                     ocppService.sendStatusNotification(
@@ -658,90 +500,91 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       selectedErrorCode,
                     )
                   }
-                  className="h-8 w-full rounded-md bg-[#2a0f15] hover:bg-[#3a1520] border border-[#7f2030] text-[#fda4af] text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 transition-colors"
                 >
-                  <AlertTriangle className="h-3 w-3" /> Trip Fault
-                </button>
+                  <AlertTriangle aria-hidden="true" /> Trip fault
+                </Button>
               </div>
             </div>
           </div>
         </div>
 
-        {/* RIGHT PANE: Reservation → Charging Profiles → Diagnostics */}
-        <div className="flex flex-col bg-[#181a24]">
-          {/* Auth + Cable — compact top row */}
-          <div className="p-3 border-b border-[#232636]">
-            <span className="block mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-[#5d6577]">
-              Authorization &amp; Cable
-            </span>
-            {/* Auth inline */}
-            <div className="flex items-center gap-2 mb-2">
-              <div className="relative flex-1">
-                <Radio className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#5d6577] pointer-events-none" />
-                <input
+        {/* RIGHT: the charging flow, top to bottom */}
+        <div className="@container flex flex-col divide-y divide-b-subtle">
+          {/* Authorization */}
+          <div className="p-4">
+            <SectionHeading icon={<ShieldCheck aria-hidden="true" />}>
+              Authorization
+            </SectionHeading>
+            <Field label="ID tag" htmlFor={`${uid}-idtag`}>
+              <div className="flex gap-2">
+                <Input
+                  id={`${uid}-idtag`}
                   value={connector.idTag}
                   onChange={(e) =>
                     updateConnector(connectorId, {
                       idTag: e.target.value,
                     })
                   }
-                  className="w-full h-8 pl-8 pr-2 rounded-md text-[12px] font-mono text-white bg-[#121420] border border-[#232636] outline-none placeholder:text-[#383e50] focus:border-[#8b5cf6] focus:shadow-[0_0_0_2px_rgba(139,92,246,0.15)] transition-all"
-                  placeholder="RFID Token"
+                  placeholder="RFID token"
+                  className="font-mono"
                 />
+                <Button
+                  variant="default"
+                  disabled={!isConnected || authResult === "loading"}
+                  onClick={handleAuth}
+                >
+                  <ShieldCheck aria-hidden="true" />
+                  {authResult === "loading" ? "Authorizing…" : "Authorize"}
+                </Button>
               </div>
-              <button
-                disabled={!isConnected || authResult === "loading"}
-                onClick={handleAuth}
-                className={`h-8 px-3 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-40 shrink-0 transition-all ${
-                  authResult === "Accepted"
-                    ? "bg-emerald-600 text-white"
-                    : authResult === "Rejected"
-                      ? "bg-red-600 text-white"
-                      : "btn-primary"
-                }`}
-              >
-                {authResult === "loading" ? (
-                  <span className="animate-pulse">···</span>
-                ) : authResult === "Accepted" ? (
-                  <>
-                    <ShieldCheck className="h-3.5 w-3.5" /> ✓ OK
-                  </>
-                ) : authResult === "Rejected" ? (
-                  <>
-                    <ShieldCheck className="h-3.5 w-3.5" /> ✗ Fail
-                  </>
-                ) : (
-                  <>
-                    <ShieldCheck className="h-3.5 w-3.5" /> Auth
-                  </>
-                )}
-              </button>
+            </Field>
+            <div role="status" className="mt-2 min-h-6">
+              {authResult === "Accepted" && (
+                <Badge variant="success">
+                  <CircleCheck aria-hidden="true" />
+                  Authorization accepted
+                </Badge>
+              )}
+              {authResult === "Rejected" && (
+                <Badge variant="danger">
+                  <CircleX aria-hidden="true" />
+                  Authorization rejected
+                </Badge>
+              )}
             </div>
-            {/* Cable state + actions */}
-            <div className="flex items-center gap-1.5 mb-2">
-              <div
-                className={`flex items-center gap-1 flex-1 px-2 py-1.5 rounded border text-[9px] font-bold ${
-                  connector.cablePluggedIn
-                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
-                    : "bg-[#1f2231] border-[#282b3a] text-[#5d6577]"
-                }`}
-              >
-                <PlugZap className="h-2.5 w-2.5" />
-                {connector.cablePluggedIn ? "Plugged" : "Unplugged"}
-              </div>
-              <div
-                className={`flex items-center gap-1 px-2 py-1.5 rounded border text-[9px] font-bold ${
-                  connector.cableLocked
-                    ? "bg-amber-500/10 border-amber-500/20 text-amber-400"
-                    : "bg-[#1f2231] border-[#282b3a] text-[#5d6577]"
-                }`}
-              >
-                {connector.cableLocked ? "🔒 Locked" : "🔓 Open"}
-              </div>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5">
+          </div>
+
+          {/* Cable */}
+          <div className="p-4">
+            <SectionHeading
+              icon={<Cable aria-hidden="true" />}
+              action={
+                <div className="flex gap-1.5">
+                  <Badge
+                    variant={connector.cablePluggedIn ? "success" : "neutral"}
+                  >
+                    {connector.cablePluggedIn ? "Plugged in" : "Unplugged"}
+                  </Badge>
+                  <Badge
+                    variant={connector.cableLocked ? "warning" : "neutral"}
+                  >
+                    {connector.cableLocked ? (
+                      <Lock aria-hidden="true" />
+                    ) : (
+                      <LockOpen aria-hidden="true" />
+                    )}
+                    {connector.cableLocked ? "Locked" : "Unlocked"}
+                  </Badge>
+                </div>
+              }
+            >
+              Cable
+            </SectionHeading>
+            <div className="grid grid-cols-3 gap-2">
               {!connector.cablePluggedIn ? (
-                <button
+                <Button
+                  size="sm"
+                  variant="soft-success"
                   disabled={!isConnected}
                   onClick={() => {
                     updateConnector(connectorId, {
@@ -753,13 +596,17 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       "Preparing",
                     );
                   }}
-                  className="h-8 rounded bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-300 text-[9px] font-bold uppercase tracking-widest flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
                 >
-                  <PlugZap className="h-3 w-3" /> Plug In
-                </button>
+                  <PlugZap aria-hidden="true" /> Plug in
+                </Button>
               ) : (
-                <button
-                  disabled={!isConnected || connector.cableLocked || inTx}
+                <Button
+                  size="sm"
+                  variant="soft-danger"
+                  disabled={!isConnected || unplugBlocker !== null}
+                  aria-describedby={
+                    unplugBlocker ? `${uid}-unplug-hint` : undefined
+                  }
                   onClick={() => {
                     updateConnector(connectorId, {
                       cablePluggedIn: false,
@@ -770,56 +617,57 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       "Available",
                     );
                   }}
-                  className="h-8 rounded bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-300 text-[9px] font-bold uppercase tracking-widest flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 transition-colors"
-                  title={
-                    connector.cableLocked
-                      ? "Cable is locked — unlock first"
-                      : inTx
-                        ? "Stop transaction first"
-                        : ""
-                  }
                 >
-                  <PowerOff className="h-3 w-3" /> Unplug
-                </button>
+                  <Unplug aria-hidden="true" /> Unplug
+                </Button>
               )}
-              <button
+              <Button
+                size="sm"
+                variant={connector.cableLocked ? "soft-warning" : "neutral"}
+                aria-pressed={connector.cableLocked}
                 disabled={!isConnected || !connector.cablePluggedIn}
                 onClick={() =>
                   updateConnector(connectorId, {
                     cableLocked: !connector.cableLocked,
                   })
                 }
-                className={`h-8 rounded border text-[9px] font-bold uppercase tracking-widest flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 transition-colors ${
-                  connector.cableLocked
-                    ? "bg-amber-500/15 border-amber-500/30 text-amber-300 hover:bg-amber-500/25"
-                    : "bg-[#1f2231] border-[#282b3a] text-[#a0a8b8] hover:bg-[#282b3a] hover:text-white"
-                }`}
               >
-                <Unlock className="h-3 w-3" />
+                {connector.cableLocked ? (
+                  <LockOpen aria-hidden="true" />
+                ) : (
+                  <Lock aria-hidden="true" />
+                )}
                 {connector.cableLocked ? "Unlock" : "Lock"}
-              </button>
-              <button
+              </Button>
+              <Button
+                size="sm"
+                variant={inMaintenance ? "soft-warning" : "neutral"}
+                aria-pressed={inMaintenance}
                 onClick={toggleMaintenance}
-                className={`h-8 rounded border text-[9px] font-bold uppercase tracking-widest flex items-center justify-center gap-1 cursor-pointer transition-colors ${
-                  inMaintenance
-                    ? "bg-amber-500/20 border-amber-500/50 text-amber-300 hover:bg-amber-500/30"
-                    : "bg-[#1f2231] border-[#282b3a] text-[#a0a8b8] hover:bg-[#282b3a] hover:text-white"
-                }`}
               >
-                <Wrench className="h-3 w-3" />
-                {inMaintenance ? "End Maint" : "Maint."}
-              </button>
+                <Wrench aria-hidden="true" /> Maintenance
+              </Button>
             </div>
+            {connector.cablePluggedIn && unplugBlocker && (
+              <p
+                id={`${uid}-unplug-hint`}
+                className="mt-2 text-2xs text-t-muted"
+              >
+                {unplugBlocker}
+              </p>
+            )}
           </div>
 
-          {/* Transaction Controls */}
-          <div className="p-3 border-b border-[#232636]">
-            <span className="block mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-[#5d6577]">
-              Transaction Control
-            </span>
-            <div className="grid grid-cols-2 gap-2">
-              {!inTx ? (
-                <button
+          {/* Transaction */}
+          <div className="p-4">
+            <SectionHeading icon={<Zap aria-hidden="true" />}>
+              Transaction
+            </SectionHeading>
+            {!inTx ? (
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant="success"
+                  size="lg"
                   disabled={!isConnected}
                   onClick={() =>
                     is2x
@@ -829,176 +677,176 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                         )
                       : ocppService.startTransaction(connectorId)
                   }
-                  className="h-10 rounded-md btn-success text-[12px] font-bold uppercase tracking-widest flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
                 >
-                  <Play className="h-4 w-4" /> Start Tx
-                </button>
-              ) : (
-                <button
+                  <Play aria-hidden="true" /> Start transaction
+                </Button>
+                <Button
+                  variant="neutral"
+                  size="lg"
+                  disabled={!isConnected}
+                  title="Start a transaction that charges to the target kWh, then stops"
+                  onClick={() => ocppService.startAutoCharge(connectorId)}
+                >
+                  <Zap aria-hidden="true" /> Auto charge
+                </Button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2 @sm:items-end">
+                <Button
+                  variant="danger"
+                  size="lg"
                   disabled={!isConnected}
                   onClick={() =>
                     is2x
                       ? ocppService.stopTransaction201(connectorId)
                       : ocppService.stopTransaction(connectorId)
                   }
-                  className="h-10 rounded-md btn-danger text-[12px] font-bold uppercase tracking-widest flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
                 >
-                  <Square className="h-4 w-4" /> Stop Tx
-                </button>
-              )}
-              <button
-                disabled={!isConnected}
-                onClick={() =>
-                  inTx
-                    ? ocppService.stopAutoCharge(connectorId)
-                    : ocppService.startAutoCharge(connectorId)
-                }
-                className={`h-10 rounded-md text-[12px] font-bold uppercase tracking-widest flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40 ${
-                  inTx
-                    ? "btn-warning bg-opacity-20 border-[#f59e0b]"
-                    : "btn-ghost"
-                }`}
-              >
-                <Bolt className={`h-4 w-4 ${inTx ? "animate-pulse" : ""}`} />{" "}
-                {inTx ? "Auto: ON" : "Auto Charge"}
-              </button>
-            </div>
-            {inTx && (
-              <div className="mt-2">
-                <MiniSelect
-                  label="Transaction Stop Reason"
-                  value={connector.stopReason}
-                  options={STOP_REASONS}
-                  onChange={(v) =>
-                    updateConnector(connectorId, {
-                      stopReason: v as StopReason,
-                    })
-                  }
-                />
+                  <Square aria-hidden="true" /> Stop transaction
+                </Button>
+                <Field label="Stop reason">
+                  <OptionSelect
+                    size="sm"
+                    value={connector.stopReason}
+                    options={STOP_REASONS}
+                    onChange={(v) =>
+                      updateConnector(connectorId, {
+                        stopReason: v,
+                      })
+                    }
+                  />
+                </Field>
               </div>
             )}
           </div>
 
           {/* Charging Profiles — conditional */}
           {connector.chargingProfiles.length > 0 && (
-            <div className="p-3 border-b border-[#282b3a]">
-              <div className="flex items-center justify-between mb-2">
-                <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-400">
-                  <Battery className="w-3 h-3" /> Charging Profiles
-                </span>
-                <span className="text-[9px] font-mono text-t-faint">
-                  {connector.chargingProfiles.length} active
-                </span>
-              </div>
-              <div className="space-y-2">
-                {connector.chargingProfiles.map((profile) => (
-                  <div
-                    key={profile.chargingProfileId}
-                    className="rounded-lg border border-emerald-500/15 bg-emerald-500/5 p-2.5"
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-[9px] font-bold text-emerald-300">
-                        {profile.chargingProfilePurpose}
-                      </span>
-                      <span className="text-[8px] font-mono text-emerald-400/50">
-                        ID:{profile.chargingProfileId} · L{profile.stackLevel}
-                      </span>
-                    </div>
-                    <div className="space-y-0.5">
-                      {profile.chargingSchedule.chargingSchedulePeriod.map(
-                        (period) => {
-                          const maxLimit = Math.max(
-                            ...profile.chargingSchedule.chargingSchedulePeriod.map(
-                              (p) => p.limit,
-                            ),
-                          );
+            <div className="p-4">
+              <SectionHeading
+                icon={<Battery aria-hidden="true" />}
+                action={
+                  <span className="text-2xs text-t-muted">
+                    {connector.chargingProfiles.length} active
+                  </span>
+                }
+              >
+                Charging profiles
+              </SectionHeading>
+              <ul className="space-y-2">
+                {connector.chargingProfiles.map((profile) => {
+                  const periods =
+                    profile.chargingSchedule.chargingSchedulePeriod;
+                  const unit =
+                    profile.chargingSchedule.chargingRateUnit === "W"
+                      ? "W"
+                      : "A";
+                  const maxLimit = Math.max(...periods.map((p) => p.limit));
+                  return (
+                    <li
+                      key={profile.chargingProfileId}
+                      className="rounded-lg border border-success/25 bg-success/5 p-3"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-success">
+                          {profile.chargingProfilePurpose}
+                        </span>
+                        <span className="font-mono text-2xs text-t-muted">
+                          ID {profile.chargingProfileId} · stack{" "}
+                          {profile.stackLevel}
+                        </span>
+                      </div>
+                      <ul className="space-y-1">
+                        {periods.map((period) => {
                           const pct =
                             maxLimit > 0 ? (period.limit / maxLimit) * 100 : 0;
                           return (
-                            <div
+                            <li
                               key={`${profile.chargingProfileId}-${period.startPeriod}`}
-                              className="flex items-center gap-1.5"
+                              className="flex items-center gap-2"
                             >
-                              <span className="text-[8px] font-mono text-t-faint w-10 shrink-0">
+                              <span className="w-12 shrink-0 font-mono text-2xs text-t-muted">
                                 {period.startPeriod}s
                               </span>
-                              <div className="flex-1 h-2.5 bg-[#0a0c14] rounded-full overflow-hidden">
+                              <div
+                                aria-hidden="true"
+                                className="h-2 flex-1 overflow-hidden rounded-full bg-surface-inset"
+                              >
                                 <div
-                                  className="h-full bg-emerald-500/40 rounded-full transition-all"
+                                  className="h-full rounded-full bg-success/60"
                                   style={{
                                     width: `${pct}%`,
                                   }}
                                 />
                               </div>
-                              <span className="text-[8px] font-mono text-emerald-300 w-12 text-right shrink-0">
-                                {period.limit}
-                                {profile.chargingSchedule.chargingRateUnit ===
-                                "W"
-                                  ? "W"
-                                  : "A"}
+                              <span className="w-14 shrink-0 text-right font-mono text-2xs text-t-secondary">
+                                {period.limit} {unit}
                               </span>
-                            </div>
+                            </li>
                           );
-                        },
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+                        })}
+                      </ul>
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
           )}
 
           {/* Reservation */}
-          <div className="p-3 border-b border-[#232636]">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5d6577]">
-                Reservation
-              </span>
-              {connector.reservation && (
-                <button
-                  onClick={() => {
-                    updateConnector(connectorId, {
-                      reservation: null,
-                    });
-                    if (connector.status === "Reserved")
-                      ocppService.sendStatusNotification(
-                        connectorId,
-                        "Available",
-                      );
-                  }}
-                  className="text-[9px] font-bold text-amber-400/70 hover:text-amber-300 px-1.5 py-0.5 rounded hover:bg-amber-500/10 transition-colors cursor-pointer"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
+          <div className="p-4">
+            <SectionHeading
+              icon={<CalendarCheck aria-hidden="true" />}
+              action={
+                connector.reservation && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-warning"
+                    onClick={() => {
+                      updateConnector(connectorId, {
+                        reservation: null,
+                      });
+                      if (connector.status === "Reserved")
+                        ocppService.sendStatusNotification(
+                          connectorId,
+                          "Available",
+                        );
+                    }}
+                  >
+                    Clear reservation
+                  </Button>
+                )
+              }
+            >
+              Reservation
+            </SectionHeading>
             {connector.reservation ? (
-              <div className="flex items-center gap-3 p-2.5 rounded-lg bg-amber-500/8 border border-amber-500/15">
-                <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-bold text-amber-300">
-                    {connector.reservation.idTag}
-                  </p>
-                  <p className="text-[9px] text-amber-400/60 flex items-center gap-1 mt-0.5">
-                    <Clock className="h-2.5 w-2.5" />
-                    Expires:{" "}
+              <div className="rounded-lg border border-warning/30 bg-warning/5 p-3">
+                <p className="font-mono text-sm font-semibold text-warning">
+                  {connector.reservation.idTag}
+                </p>
+                <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-t-secondary">
+                  <span className="flex items-center gap-1">
+                    <Clock className="size-3.5" aria-hidden="true" />
+                    Expires{" "}
                     {new Date(
                       connector.reservation.expiryDate,
                     ).toLocaleTimeString()}
-                    <span className="ml-1 text-amber-400/40">
-                      · RSV #{connector.reservation.reservationId}
-                    </span>
-                  </p>
-                </div>
-                <div className="h-3 w-3 rounded-full bg-amber-400 animate-pulse shrink-0" />
+                  </span>
+                  <span className="text-t-muted">
+                    Reservation #{connector.reservation.reservationId}
+                  </span>
+                </p>
               </div>
             ) : (
-              <div className="flex items-center justify-center h-10 border border-dashed border-[#282b3a] rounded-lg text-[#5d6577] text-[10px] font-medium tracking-wide">
-                No Active Reservation
-              </div>
+              <p className="rounded-lg border border-dashed border-b-strong px-3 py-3 text-center text-xs text-t-muted">
+                No active reservation
+              </p>
             )}
           </div>
         </div>
       </div>
-    </div>
+    </section>
   );
 }

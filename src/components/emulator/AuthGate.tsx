@@ -7,7 +7,7 @@ import {
   Loader2,
   Lock,
   User,
-  Zap,
+  CircleAlert,
 } from "lucide-react";
 import {
   createContext,
@@ -16,6 +16,9 @@ import {
   useEffect,
   useState,
 } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Field, IconButton, Notice } from "./kit";
 
 /* ── Auth context ── */
 const AuthCtx = createContext<{ logout: () => void } | null>(null);
@@ -59,115 +62,128 @@ function LoginPage({ onSuccess }: { onSuccess: () => void }) {
   };
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-[#0b0d14] p-4 relative overflow-hidden">
-      {/* Background blobs */}
-      <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full bg-[#8b5cf6]/5 blur-[120px] pointer-events-none" />
-      <div className="absolute bottom-1/4 right-1/4 w-80 h-80 rounded-full bg-[#0ea5e9]/5 blur-[100px] pointer-events-none" />
+    <main className="min-h-screen w-full flex items-center justify-center bg-surface-base p-4 relative overflow-hidden">
+      {/* Background glow */}
+      <div
+        aria-hidden="true"
+        className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full bg-primary/5 blur-[120px] pointer-events-none"
+      />
 
       <div className="w-full max-w-sm flex flex-col gap-6">
         {/* Logo */}
         <div className="flex flex-col items-center gap-3">
-          <div className="h-14 w-14 rounded-2xl bg-linear-to-br from-[#8b5cf6] to-[#7c3aed] flex items-center justify-center shadow-[0_0_40px_rgba(139,92,246,0.3)]">
-            <BatteryCharging className="text-white h-6 w-6" />
+          <div className="size-14 rounded-2xl bg-primary flex items-center justify-center shadow-[0_0_40px_rgba(139,92,246,0.3)]">
+            <BatteryCharging className="text-white size-6" aria-hidden="true" />
           </div>
           <div className="text-center">
-            <h1 className="text-[17px] font-bold text-white tracking-tight">
+            <h1 className="text-lg font-semibold text-t-primary tracking-tight">
               OCPP Emulator
             </h1>
-            <p className="text-[11px] text-[#4a5568] mt-0.5">
+            <p className="text-xs text-t-secondary mt-0.5">
               Sign in to access the simulator
             </p>
           </div>
         </div>
 
         {/* Card */}
-        <div className="bg-[#181a24] border border-[#232636] rounded-2xl p-6 flex flex-col gap-4">
-          {/* Error */}
-          {error && (
-            <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-[#26101a] border border-[#6b1e28] text-[#fda4af] text-[11px] font-medium">
-              <Zap className="h-3.5 w-3.5 shrink-0 text-[#f43f5e]" />
-              {error}
+        <div className="bg-surface-card border border-b-default rounded-2xl p-6 flex flex-col gap-4">
+          <form
+            onSubmit={submit}
+            noValidate
+            aria-describedby={error ? "login-error" : undefined}
+            className="flex flex-col gap-4"
+          >
+            {/* Announced as soon as it appears */}
+            <div id="login-error" role="alert">
+              {error && (
+                <Notice tone="danger" icon={<CircleAlert aria-hidden="true" />}>
+                  {error}
+                </Notice>
+              )}
             </div>
-          )}
 
-          <form onSubmit={submit} className="flex flex-col gap-3">
-            {/* Username */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[9px] font-bold uppercase tracking-widest text-[#4a5568]">
-                Username
-              </label>
+            <Field label="Username" htmlFor="login-username">
               <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#3d4459] pointer-events-none" />
-                <input
+                <User
+                  aria-hidden="true"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-t-muted pointer-events-none"
+                />
+                <Input
+                  id="login-username"
                   type="text"
                   value={username}
                   onChange={(e) => {
                     setUsername(e.target.value);
                     setError("");
                   }}
+                  aria-invalid={error && !username ? true : undefined}
                   placeholder="Enter username"
                   autoComplete="username"
+                  // biome-ignore lint/a11y/noAutofocus: the only task on this screen is signing in
                   autoFocus
-                  className="w-full h-10 pl-9 pr-3 rounded-lg text-[12px] text-white font-medium bg-[#0f1117] border border-[#232636] placeholder:text-[#2e3445] outline-none focus:border-[#8b5cf6] focus:shadow-[0_0_0_3px_rgba(139,92,246,0.1)] transition-all"
+                  className="h-10 pl-9"
                 />
               </div>
-            </div>
+            </Field>
 
-            {/* Password */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[9px] font-bold uppercase tracking-widest text-[#4a5568]">
-                Password
-              </label>
+            <Field label="Password" htmlFor="login-password">
               <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#3d4459] pointer-events-none" />
-                <input
+                <Lock
+                  aria-hidden="true"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-t-muted pointer-events-none"
+                />
+                <Input
+                  id="login-password"
                   type={showPw ? "text" : "password"}
                   value={password}
                   onChange={(e) => {
                     setPassword(e.target.value);
                     setError("");
                   }}
+                  aria-invalid={error && !password ? true : undefined}
                   placeholder="Enter password"
                   autoComplete="current-password"
-                  className="w-full h-10 pl-9 pr-10 rounded-lg text-[12px] text-white font-medium bg-[#0f1117] border border-[#232636] placeholder:text-[#2e3445] outline-none focus:border-[#8b5cf6] focus:shadow-[0_0_0_3px_rgba(139,92,246,0.1)] transition-all"
+                  className="h-10 pl-9 pr-11"
                 />
-                <button
-                  type="button"
+                <IconButton
+                  label={showPw ? "Hide password" : "Show password"}
+                  aria-pressed={showPw}
+                  size="icon-sm"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2"
                   onClick={() => setShowPw(!showPw)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#3d4459] hover:text-[#6b7898] transition-colors cursor-pointer"
                 >
                   {showPw ? (
-                    <EyeOff className="h-3.5 w-3.5" />
+                    <EyeOff aria-hidden="true" />
                   ) : (
-                    <Eye className="h-3.5 w-3.5" />
+                    <Eye aria-hidden="true" />
                   )}
-                </button>
+                </IconButton>
               </div>
-            </div>
+            </Field>
 
-            {/* Submit */}
-            <button
+            <Button
               type="submit"
+              size="lg"
               disabled={loading}
-              className="mt-1 w-full h-10 rounded-lg flex items-center justify-center gap-2 font-bold text-[12px] tracking-wide bg-linear-to-r from-[#8b5cf6] to-[#7c3aed] text-white shadow-[0_0_16px_rgba(139,92,246,0.25)] hover:shadow-[0_0_24px_rgba(139,92,246,0.4)] transition-all disabled:opacity-60 cursor-pointer"
+              className="mt-1 w-full"
             >
               {loading ? (
                 <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className="animate-spin" aria-hidden="true" />
                   Signing in…
                 </>
               ) : (
-                "Sign In"
+                "Sign in"
               )}
-            </button>
+            </Button>
           </form>
         </div>
 
-        <p className="text-center text-[9px] text-[#2e3445]">
-          Session persists for 10 days
+        <p className="text-center text-xs text-t-muted">
+          Your session stays signed in for 10 days.
         </p>
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -206,8 +222,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (state === "unknown") {
     // Show nothing while checking to avoid flash
     return (
-      <div className="min-h-screen w-full flex items-center justify-center bg-[#0b0d14]">
-        <Loader2 className="h-6 w-6 text-[#8b5cf6] animate-spin" />
+      <div className="min-h-screen w-full flex items-center justify-center bg-surface-base">
+        <Loader2 className="h-6 w-6 text-brand animate-spin" />
       </div>
     );
   }

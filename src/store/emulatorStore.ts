@@ -833,11 +833,15 @@ const updateRuntime = (
     runtime: updater(slot.runtime),
   }));
 
+// A first-time visitor has nothing persisted, so the initial slot must already
+// be the active one — otherwise nothing is selected and edits go nowhere.
+const initialSlot = makeDefaultSlot(1);
+
 export const useEmulatorStore = create<EmulatorStore>()(
   persist(
     (set, get) => ({
-      chargers: [makeDefaultSlot(1)],
-      activeChargerId: "",
+      chargers: [initialSlot],
+      activeChargerId: initialSlot.id,
 
       getSlot: (id) => get().chargers.find((c) => c.id === id),
 

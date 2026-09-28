@@ -9,6 +9,7 @@ import { ConfigPanel } from "@/components/emulator/ConfigPanel";
 import { ConnectorsView } from "@/components/emulator/EmulatorTabs";
 import { HeaderBar } from "@/components/emulator/HeaderBar";
 import { LogsPanel } from "@/components/emulator/LogsPanel";
+import { Button } from "@/components/ui/button";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -148,11 +149,19 @@ export default function Home() {
 
   return (
     <AuthGate>
-      <main className="h-screen w-screen flex flex-col overflow-hidden">
+      <div className="h-screen w-screen flex flex-col overflow-hidden">
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
+        {/* Bypass block (WCAG 2.4.1): first tab stop jumps past the header */}
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-xs focus:font-semibold focus:text-white"
+        >
+          Skip to main content
+        </a>
+
         {/* ── Header ── */}
         <HeaderBar onSettingsOpen={toggleConfig} />
 
@@ -160,85 +169,89 @@ export default function Home() {
         <ChargerTabBar />
 
         {/* ── 3-Panel Resizable Layout ── */}
-        <ResizablePanelGroup orientation="horizontal" className="flex-1">
-          {/* Left side: Connectors (top) + Logs (bottom) */}
-          <ResizablePanel
-            defaultSize={configOpen ? "70%" : "100%"}
-            minSize={"40%"}
-          >
-            <ResizablePanelGroup orientation="vertical" className="h-full">
-              {/* Top: Connectors */}
-              <ResizablePanel
-                defaultSize={logsOpen ? "55%" : "100%"}
-                minSize={"20%"}
-                maxSize={logsOpen ? "80%" : "100%"}
-              >
-                <div className="h-full overflow-y-auto p-5 custom-scrollbar">
-                  <div className="max-w-[1400px] mx-auto w-full flex flex-col">
-                    <ConnectorsView />
-                  </div>
-                </div>
-              </ResizablePanel>
-
-              {logsOpen ? (
-                <>
-                  {/* Horizontal resize handle */}
-                  <ResizableHandle className="h-px! bg-[#282b3a] hover:bg-[#14b8a6]/40 transition-colors data-resize-handle-active:bg-[#14b8a6]/60" />
-
-                  {/* Bottom: Logs */}
-                  <ResizablePanel
-                    defaultSize={"45%"}
-                    minSize={"20%"}
-                    maxSize={"75%"}
-                  >
-                    <div
-                      className={cn(
-                        "h-full py-4 max-w-[1400px] mx-auto w-full flex flex-col",
-                        configOpen && "p-4",
-                      )}
-                    >
-                      <LogsPanel onHide={hideLogs} />
-                    </div>
-                  </ResizablePanel>
-                </>
-              ) : (
-                /* Slim restore bar when logs are hidden */
-                <button
-                  onClick={showLogs}
-                  title="Show log panel"
-                  className="shrink-0 w-full flex items-center gap-2 px-4 h-8 border-t border-[#1e2030] bg-[#11131b] hover:bg-[#181b27] text-[#3d4459] hover:text-[#c4b5fd] transition-colors cursor-pointer group"
+        <main id="main-content" tabIndex={-1} className="flex flex-1 min-h-0">
+          <ResizablePanelGroup orientation="horizontal" className="flex-1">
+            {/* Left side: Connectors (top) + Logs (bottom) */}
+            <ResizablePanel
+              defaultSize={configOpen ? "70%" : "100%"}
+              minSize={"40%"}
+            >
+              <ResizablePanelGroup orientation="vertical" className="h-full">
+                {/* Top: Connectors */}
+                <ResizablePanel
+                  defaultSize={logsOpen ? "55%" : "100%"}
+                  minSize={"20%"}
+                  maxSize={logsOpen ? "80%" : "100%"}
                 >
-                  <PanelBottomOpen className="h-3.5 w-3.5 group-hover:text-[#c4b5fd]" />
-                  <span className="text-[9px] font-bold uppercase tracking-widest">
-                    OCPP Log
-                  </span>
-                </button>
-              )}
-            </ResizablePanelGroup>
-          </ResizablePanel>
+                  <div className="h-full overflow-y-auto p-5 custom-scrollbar">
+                    <div className="max-w-[1400px] mx-auto w-full flex flex-col">
+                      <ConnectorsView />
+                    </div>
+                  </div>
+                </ResizablePanel>
 
-          {/* Right side: Config Panel (resizable, collapsible) */}
-          {configOpen && (
-            <>
-              <ResizableHandle className="w-px! bg-[#282b3a] hover:bg-[#14b8a6]/40 transition-colors data-resize-handle-active:bg-[#14b8a6]/60" />
-              <ResizablePanel
-                defaultSize={"30%"}
-                minSize={"20%"}
-                maxSize={"50%"}
-              >
-                <div className="h-full overflow-hidden">
-                  <ConfigPanel
-                    onClose={() => {
-                      setConfigOpen(false);
-                      localStorage.setItem("configPanelOpen", "false");
-                    }}
-                  />
-                </div>
-              </ResizablePanel>
-            </>
-          )}
-        </ResizablePanelGroup>
-      </main>
+                {logsOpen ? (
+                  <>
+                    {/* Horizontal resize handle */}
+                    <ResizableHandle className="h-px! bg-surface-hover hover:bg-brand/50 transition-colors data-resize-handle-active:bg-brand" />
+
+                    {/* Bottom: Logs */}
+                    <ResizablePanel
+                      defaultSize={"45%"}
+                      minSize={"20%"}
+                      maxSize={"75%"}
+                    >
+                      <div
+                        className={cn(
+                          "h-full py-4 max-w-[1400px] mx-auto w-full flex flex-col",
+                          configOpen && "p-4",
+                        )}
+                      >
+                        <LogsPanel onHide={hideLogs} />
+                      </div>
+                    </ResizablePanel>
+                  </>
+                ) : (
+                  /* Slim restore bar when logs are hidden */
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={showLogs}
+                    className="w-full shrink-0 justify-start rounded-none border-t border-t-b-subtle bg-surface-inset px-4"
+                  >
+                    <PanelBottomOpen aria-hidden="true" />
+                    Show OCPP log
+                    <kbd className="ml-auto font-mono text-2xs font-normal text-t-muted">
+                      Ctrl+`
+                    </kbd>
+                  </Button>
+                )}
+              </ResizablePanelGroup>
+            </ResizablePanel>
+
+            {/* Right side: Config Panel (resizable, collapsible) */}
+            {configOpen && (
+              <>
+                <ResizableHandle className="w-px! bg-surface-hover hover:bg-brand/50 transition-colors data-resize-handle-active:bg-brand" />
+                <ResizablePanel
+                  defaultSize={"30%"}
+                  minSize={"20%"}
+                  maxSize={"50%"}
+                >
+                  <div className="h-full overflow-hidden">
+                    <ConfigPanel
+                      onClose={() => {
+                        setConfigOpen(false);
+                        localStorage.setItem("configPanelOpen", "false");
+                      }}
+                    />
+                  </div>
+                </ResizablePanel>
+              </>
+            )}
+          </ResizablePanelGroup>
+        </main>
+      </div>
     </AuthGate>
   );
 }

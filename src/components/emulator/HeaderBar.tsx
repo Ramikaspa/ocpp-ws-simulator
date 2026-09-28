@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  ChevronDown,
   Loader2,
   LogOut,
   Power,
@@ -11,22 +10,34 @@ import {
   WifiOff,
   Zap,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/components/emulator/AuthGate";
 import { LocalhostGuideDialog } from "@/components/emulator/LocalhostGuideDialog";
 import { ShortcutsDialog } from "@/components/emulator/ShortcutsDialog";
 import { useActiveCharger } from "@/hooks/useActiveCharger";
-import type { ConnectionStatus } from "@/store/emulatorStore";
+import { cn } from "@/lib/utils";
+import type { ConnectionStatus, EmulatorConfig } from "@/store/emulatorStore";
+import { Button } from "@/components/ui/button";
+import { IconButton, OptionSelect } from "./kit";
 
 /* ── Status config ── */
 type StCfg = { dot: string; text: string; label: string };
 const ST: Record<ConnectionStatus, StCfg> = {
-  connected: { dot: "#22c55e", text: "#4ade80", label: "Connected" },
-  connecting: { dot: "#f59e0b", text: "#fbbf24", label: "Connecting" },
-  faulted: { dot: "#f43f5e", text: "#fda4af", label: "Faulted" },
-  disconnected: { dot: "#4b5563", text: "#6b7280", label: "Disconnected" },
+  connected: { dot: "bg-success", text: "text-success", label: "Connected" },
+  connecting: { dot: "bg-warning", text: "text-warning", label: "Connecting" },
+  faulted: { dot: "bg-danger", text: "text-danger", label: "Faulted" },
+  disconnected: {
+    dot: "bg-t-muted",
+    text: "text-t-secondary",
+    label: "Disconnected",
+  },
 };
+
+const VERSIONS: { label: string; value: EmulatorConfig["ocppVersion"] }[] = [
+  { label: "OCPP 1.6J", value: "ocpp1.6" },
+  { label: "OCPP 2.0.1", value: "ocpp2.0.1" },
+  { label: "OCPP 2.1", value: "ocpp2.1" },
+];
 
 function formatUptime(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -44,21 +55,7 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
   const isConnected = status === "connected";
   const isConnecting = status === "connecting";
   const st = ST[status];
-
-  /* version picker */
-  const [vOpen, setVOpen] = useState(false);
-  const [vRect, setVRect] = useState<DOMRect | null>(null);
-  const vBtnRef = useRef<HTMLButtonElement>(null);
-  const VERSIONS = ["ocpp1.6", "ocpp2.0.1", "ocpp2.1"] as const;
   const vLocked = isConnected || isConnecting;
-
-  /* close version picker on outside click */
-  useEffect(() => {
-    if (!vOpen) return;
-    const close = () => setVOpen(false);
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [vOpen]);
 
   const [uptime, setUptime] = useState("");
   useEffect(() => {
@@ -76,14 +73,15 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
     import("@/lib/ocppClient").then(({ ocppService }) => fn(ocppService)); // proxy auto-routes to active charger
 
   return (
-    <header className="sticky top-0 z-30 h-14 flex items-center px-4 gap-4 bg-[#181a24] border-b border-[#232636]">
+    <header className="sticky top-0 z-30 h-14 flex items-center px-4 gap-3 bg-surface-card border-b border-b-subtle">
       {/* ── Brand ── */}
       <div className="flex items-center gap-2.5 shrink-0">
-        <div className="h-7 w-7 rounded-lg flex items-center justify-center overflow-hidden bg-[#1a1030] shadow-[0_0_12px_rgba(124,58,237,0.35)] shrink-0">
+        <div className="size-8 rounded-lg flex items-center justify-center overflow-hidden bg-brand-subtle border border-brand/30 shrink-0">
           <svg
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 100 100"
-            className="h-5 w-5"
+            className="size-5"
+            aria-hidden="true"
           >
             <defs>
               <linearGradient id="hdr-grad" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -111,125 +109,68 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
             />
           </svg>
         </div>
-        <span className="text-[13px] font-bold text-white tracking-tight hidden sm:block">
+        <h1 className="text-sm font-semibold text-t-primary tracking-tight sr-only sm:not-sr-only">
           OCPP WS Simulator
-        </span>
+        </h1>
       </div>
 
-      <div className="h-5 w-px bg-[#282b3a] shrink-0 hidden sm:block" />
+      <div
+        className="h-6 w-px bg-b-strong shrink-0 hidden sm:block"
+        aria-hidden="true"
+      />
 
-      {/* ── Endpoint (clickable) ── */}
-      <button
+      {/* ── Endpoint (opens connection settings) ── */}
+      <Button
+        variant="neutral"
+        size="sm"
         onClick={onSettingsOpen}
         title="Edit connection settings"
-        className="hidden md:flex items-center gap-2 h-7 px-3 rounded-lg bg-[#0f1117] border border-[#232636] hover:border-[#2d3050] hover:bg-[#13151f] transition-all group min-w-0 max-w-sm cursor-pointer"
+        className="hidden md:flex min-w-0 max-w-sm bg-surface-inset font-normal"
       >
-        <span className="text-[10px] font-mono text-[#4a5568] group-hover:text-[#7a88a8] truncate transition-colors">
+        <span className="sr-only">Connection settings: </span>
+        <span className="text-xs font-mono text-t-secondary truncate">
           {config.endpoint}/
-          <span className="text-[#c4b5fd]">{config.chargePointId}</span>
+          <span className="text-brand-strong">{config.chargePointId}</span>
         </span>
-        <span className="shrink-0 text-[8px] font-mono text-[#3d4459] border border-[#232636] rounded px-1 py-px uppercase tracking-widest">
-          {config.ocppVersion}
-        </span>
-      </button>
+      </Button>
 
-      {/* ── OCPP Version Picker ── */}
-      <div className="relative shrink-0">
-        <button
-          ref={vBtnRef}
+      {/* ── OCPP Version ── */}
+      <div
+        className="w-32 shrink-0"
+        title={
+          vLocked ? "Disconnect first to change the OCPP version" : undefined
+        }
+      >
+        <OptionSelect
+          size="sm"
+          aria-label="OCPP version"
+          value={config.ocppVersion}
+          options={VERSIONS}
           disabled={vLocked}
-          onClick={() => {
-            if (vLocked) return;
-            if (vBtnRef.current)
-              setVRect(vBtnRef.current.getBoundingClientRect());
-            setVOpen(!vOpen);
-          }}
-          title={
-            vLocked
-              ? "Disconnect first to change OCPP version"
-              : "Change OCPP version"
-          }
-          className={`h-7 flex items-center gap-1.5 px-2.5 rounded-lg bg-[#0f1117] border border-[#232636] transition-all group ${
-            vLocked
-              ? "opacity-40 cursor-not-allowed"
-              : "hover:border-[#2d3050] hover:bg-[#13151f] cursor-pointer"
-          }`}
-        >
-          <span className="text-[9px] font-mono font-bold text-[#8b5cf6] uppercase tracking-wider">
-            {config.ocppVersion.replace("ocpp", "v")}
-          </span>
-          <ChevronDown
-            className={`h-3 w-3 text-[#3d4459] transition-transform ${
-              vOpen ? "rotate-180" : ""
-            }`}
-          />
-        </button>
-        {vOpen &&
-          vRect &&
-          createPortal(
-            <div
-              onMouseDown={(e) => e.stopPropagation()}
-              style={{
-                position: "fixed",
-                top: vRect.bottom + 4,
-                left: vRect.left,
-                minWidth: vRect.width,
-                zIndex: 9999,
-              }}
-              className="rounded-lg overflow-hidden border border-[#2d3050] bg-[#181a24] shadow-[0_8px_32px_rgba(0,0,0,0.7)]"
-            >
-              {VERSIONS.map((v) => (
-                <button
-                  key={v}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                  onClick={() => {
-                    updateConfig({ ocppVersion: v });
-                    setVOpen(false);
-                  }}
-                  className={`w-full flex items-center gap-2 px-3 py-2 text-[10px] font-mono font-bold cursor-pointer transition-colors ${
-                    config.ocppVersion === v
-                      ? "text-[#8b5cf6] bg-[#1e1535]"
-                      : "text-[#4a5568] hover:text-white hover:bg-[#1d1f2b]"
-                  }`}
-                >
-                  <span
-                    className={`h-1.5 w-1.5 rounded-full shrink-0 ${
-                      config.ocppVersion === v ? "bg-[#8b5cf6]" : "bg-[#232636]"
-                    }`}
-                  />
-                  {v.replace("ocpp", "OCPP ")}
-                </button>
-              ))}
-            </div>,
-            document.body,
-          )}
+          onChange={(v) => updateConfig({ ocppVersion: v })}
+          className="font-mono"
+        />
       </div>
 
       {/* ── Spacer ── */}
       <div className="flex-1" />
 
-      {/* ── Status indicator ── */}
+      {/* ── Connection status (announced to screen readers) ── */}
       <div className="hidden sm:flex items-center gap-2 shrink-0">
-        <span className="relative flex h-2 w-2">
-          {isConnected && (
-            <span
-              className="animate-ping absolute inset-0 rounded-full opacity-50"
-              style={{ background: st.dot }}
-            />
-          )}
-          <span
-            className="relative inline-flex rounded-full h-2 w-2"
-            style={{ background: st.dot, boxShadow: `0 0 6px ${st.dot}` }}
-          />
-        </span>
-        <span className="text-[10px] font-medium" style={{ color: st.text }}>
+        <span
+          className={cn("size-2 rounded-full shrink-0", st.dot)}
+          aria-hidden="true"
+        />
+        <span role="status" className={cn("text-xs font-semibold", st.text)}>
           {st.label}
+          {offlineMode && isConnected ? " (simulated offline)" : ""}
         </span>
         {uptime && (
-          <span className="text-[9px] font-mono text-[#3d4459] bg-[#0f1117] border border-[#232636] rounded px-1.5 py-0.5">
+          <span
+            className="text-2xs font-mono text-t-secondary bg-surface-inset border border-b-strong rounded px-1.5 py-0.5"
+            title="Time since connecting"
+          >
+            <span className="sr-only">Connected for </span>
             {uptime}
           </span>
         )}
@@ -238,21 +179,29 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
       {/* Quick actions — only when connected */}
       {isConnected && (
         <>
-          <div className="h-5 w-px bg-[#282b3a] shrink-0 hidden sm:block" />
-          <div className="hidden sm:flex items-center gap-0.5">
-            <button
+          <div
+            className="h-6 w-px bg-b-strong shrink-0 hidden sm:block"
+            aria-hidden="true"
+          />
+          <div className="hidden sm:flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
               onClick={() => runService((s) => s.sendBootNotification())}
-              className="h-7 px-2.5 rounded-md flex items-center gap-1.5 text-[10px] font-semibold text-[#4a5568] hover:text-[#c4b5fd] hover:bg-[#1e1535] transition-all cursor-pointer"
             >
-              <RefreshCw className="h-3 w-3" /> Boot
-            </button>
-            <button
+              <RefreshCw aria-hidden="true" /> Boot
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
               onClick={() => runService((s) => s.sendHeartbeat())}
-              className="h-7 px-2.5 rounded-md flex items-center gap-1.5 text-[10px] font-semibold text-[#4a5568] hover:text-[#a78bfa] hover:bg-[#1e1535] transition-all cursor-pointer"
             >
-              <Zap className="h-3 w-3" /> Heartbeat
-            </button>
-            <button
+              <Zap aria-hidden="true" /> Heartbeat
+            </Button>
+            <Button
+              size="sm"
+              variant={offlineMode ? "soft-danger" : "ghost"}
+              aria-pressed={offlineMode}
               onClick={() =>
                 // Goes through the service so going back online actually
                 // replays what was queued while the station was dark.
@@ -260,79 +209,72 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
               }
               title={
                 offlineMode
-                  ? "Go back online — flush queued messages"
-                  : "Simulate network drop"
+                  ? "Go back online and flush queued messages"
+                  : "Simulate a network drop"
               }
-              className={`h-7 px-2.5 rounded-md flex items-center gap-1.5 text-[10px] font-semibold transition-all cursor-pointer ${
-                offlineMode
-                  ? "text-red-400 bg-red-500/15 border border-red-500/30 animate-pulse"
-                  : "text-[#4a5568] hover:text-amber-400 hover:bg-amber-500/10"
-              }`}
             >
-              <WifiOff className="h-3 w-3" />
-              {offlineMode ? "Offline" : "Go Offline"}
-            </button>
+              <WifiOff aria-hidden="true" />
+              Simulate offline
+            </Button>
           </div>
         </>
       )}
 
       {/* ── Connect / Disconnect ── */}
-      <button
+      <Button
+        variant={
+          isConnected ? "soft-danger" : isConnecting ? "neutral" : "default"
+        }
         disabled={isConnecting}
         onClick={() =>
           runService((s) => (isConnected ? s.disconnect() : s.connect()))
         }
-        className={`h-8 px-4 rounded-lg flex items-center gap-2 text-[11px] font-bold tracking-wide transition-all disabled:opacity-50 cursor-pointer shrink-0 ${
-          isConnected
-            ? "bg-[#1c0f13] border border-[#5c1c28] text-[#fda4af] hover:bg-[#26101a] hover:border-[#8b2838]"
-            : isConnecting
-              ? "bg-[#0f1117] border border-[#232636] text-[#4a5568]"
-              : "bg-linear-to-r from-[#7C3AED] to-[#9333ea] text-white shadow-[0_0_14px_rgba(124,58,237,0.3)] hover:shadow-[0_0_20px_rgba(124,58,237,0.5)]"
-        }`}
+        className="px-4"
       >
         {isConnecting ? (
           <>
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <Loader2 className="animate-spin" aria-hidden="true" />
             Connecting…
           </>
         ) : isConnected ? (
           <>
-            <PowerOff className="h-3.5 w-3.5" />
+            <PowerOff aria-hidden="true" />
             Disconnect
           </>
         ) : (
           <>
-            <Power className="h-3.5 w-3.5" />
+            <Power aria-hidden="true" />
             Connect
           </>
         )}
-      </button>
+      </Button>
 
-      {/* ── Shortcuts button ── */}
+      {/* ── Shortcuts ── */}
       <ShortcutsDialog />
 
       {/* ── Logout ── */}
       {process.env.NEXT_PUBLIC_ALLOW_AUTH === "true" && (
-        <button
+        <IconButton
+          label="Sign out"
+          variant="neutral"
+          className="hover:text-danger"
           onClick={() => auth?.logout()}
-          title="Sign out"
-          className="h-8 w-8 rounded-lg flex items-center justify-center bg-[#0f1117] border border-[#232636] text-[#4a5568] hover:text-[#fda4af] hover:bg-[#1c0f13] hover:border-[#5c1c28] transition-all cursor-pointer shrink-0"
         >
-          <LogOut className="h-3.5 w-3.5" />
-        </button>
+          <LogOut aria-hidden="true" />
+        </IconButton>
       )}
 
       {/* ── Localhost Guide ── */}
       <LocalhostGuideDialog />
 
       {/* ── Settings ── */}
-      <button
+      <IconButton
+        label="Open configuration panel"
+        variant="neutral"
         onClick={onSettingsOpen}
-        title="Settings"
-        className="h-8 w-8 rounded-lg flex items-center justify-center bg-[#0f1117] border border-[#232636] text-[#4a5568] hover:text-[#a0a8b8] hover:border-[#2d3050] hover:bg-[#13151f] transition-all cursor-pointer shrink-0"
       >
-        <Settings className="h-3.5 w-3.5" />
-      </button>
+        <Settings aria-hidden="true" />
+      </IconButton>
     </header>
   );
 }

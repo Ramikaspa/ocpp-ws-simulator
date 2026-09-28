@@ -3,7 +3,6 @@
 import {
   AlertTriangle,
   Check,
-  ChevronDown,
   Clock,
   Cpu,
   CreditCard,
@@ -35,7 +34,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useId, useState } from "react";
 import { LocalhostGuideDialog } from "@/components/emulator/LocalhostGuideDialog";
 import { Input } from "@/components/ui/input";
 import {
@@ -46,116 +45,22 @@ import {
 import { useActiveCharger } from "@/hooks/useActiveCharger";
 import { getService, ocppService } from "@/lib/ocppClient";
 import { type ScenarioMacro, useEmulatorStore } from "@/store/emulatorStore";
-import { Badge } from "../ui/badge";
-import { Button } from "../ui/button";
-
-/* ═══════════════════════════════════════════
-   CUSTOM DROPDOWN (replaces Select)
-   ═══════════════════════════════════════════ */
-
-function Dropdown({
-  value,
-  options,
-  onChange,
-  disabled,
-  className,
-}: {
-  value: string;
-  options: { label: string; value: string }[];
-  onChange: (v: string) => void;
-  disabled?: boolean;
-  className?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node))
-        setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  const selected = options.find((o) => o.value === value);
-
-  return (
-    <div ref={ref} className={`relative ${className ?? ""}`}>
-      <button
-        disabled={disabled}
-        onClick={() => !disabled && setOpen(!open)}
-        className={`relative h-9 flex items-center gap-2 px-3 rounded-lg bg-surface-inset border border-b-default text-[12px] text-t-primary cursor-pointer transition-all hover:bg-surface-hover hover:border-b-strong ${
-          disabled ? "opacity-40 pointer-events-none" : ""
-        }`}
-      >
-        <span className="truncate">{selected?.label ?? value}</span>
-        <ChevronDown
-          className={`h-3 w-3 text-t-muted shrink-0 transition-transform duration-200 ${
-            open ? "rotate-180" : ""
-          }`}
-        />
-      </button>
-      {open && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-50 rounded-lg bg-surface-elevated border border-b-default shadow-xl max-h-52 overflow-y-auto custom-scrollbar">
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => {
-                onChange(opt.value);
-                setOpen(false);
-              }}
-              className={`flex items-center justify-between px-3 py-2 text-[11px] cursor-pointer transition-colors ${
-                opt.value === value
-                  ? "text-indigo-400 bg-indigo-500/10"
-                  : "text-t-secondary hover:bg-surface-hover"
-              }`}
-            >
-              <span>{opt.label}</span>
-              {opt.value === value && (
-                <Check className="h-3.5 w-3.5 text-t-faint ml-auto shrink-0" />
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════
-   FIELD COMPONENT
-   ═══════════════════════════════════════════ */
-
-function Field({
-  label,
-  icon,
-  required,
-  hint,
-  children,
-}: {
-  label: string;
-  icon?: React.ReactNode;
-  required?: boolean;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between">
-        <label className="text-[10px] font-semibold text-t-muted uppercase tracking-widest flex items-center gap-1.5">
-          {icon}
-          {label}
-          {required && <span className="text-rose-400">*</span>}
-        </label>
-        {hint && (
-          <span className="text-[9px] text-t-faint font-mono">{hint}</span>
-        )}
-      </div>
-      {children}
-    </div>
-  );
-}
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Slider } from "@/components/ui/slider";
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { ConfirmAction, Field, IconButton, Notice, OptionSelect } from "./kit";
 
 /* ═══════════════════════════════════════════
    READ-ONLY BADGE
@@ -168,13 +73,15 @@ function ReadOnlyBadge({ setMessage }: { setMessage: string }) {
         render={
           <Badge
             variant="outline"
-            className="text-[7px] px-1 py-0 h-3 text-amber-400/70 border-amber-400/15 bg-amber-400/5 shrink-0 font-mono cursor-help"
+            tabIndex={0}
+            aria-label={`Read-only. A ${setMessage} from the CSMS is rejected.`}
+            className="h-5 shrink-0 cursor-help border-warning/35 bg-warning/10 px-1.5 py-0 font-mono text-2xs text-warning"
           />
         }
       >
         RO
       </TooltipTrigger>
-      <TooltipContent className="max-w-60 text-[11px] leading-snug">
+      <TooltipContent className="max-w-60 text-xs leading-snug">
         Read-only. Can't be edited here, and a {setMessage} from the CSMS is
         answered with Rejected.
       </TooltipContent>
@@ -184,38 +91,41 @@ function ReadOnlyBadge({ setMessage }: { setMessage: string }) {
 
 /* ═══════════════════════════════════════════
    SECTION CARD
+   One neutral heading style for every section. Colour is kept for
+   meaning (status, danger), not decoration.
    ═══════════════════════════════════════════ */
 
 function SectionCard({
   title,
   icon,
-  color,
   description,
   children,
 }: {
   title: string;
   icon: React.ReactNode;
-  color: string;
   description?: string;
   children: React.ReactNode;
 }) {
+  const id = useId();
   return (
-    <div
-      className={`p-3.5 rounded-xl border border-b-subtle bg-surface-inset space-y-3`}
+    <section
+      aria-labelledby={id}
+      className="space-y-3 rounded-xl border border-b-default bg-surface-inset p-4"
     >
-      <div className="flex items-center gap-2">
-        <span className={color}>{icon}</span>
-        <span
-          className={`text-[10px] font-bold uppercase tracking-[0.15em] ${color}`}
+      <div>
+        <h3
+          id={id}
+          className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-t-primary [&_svg]:size-3.5 [&_svg]:text-brand"
         >
+          {icon}
           {title}
-        </span>
+        </h3>
+        {description && (
+          <p className="mt-1 text-xs text-t-muted">{description}</p>
+        )}
       </div>
-      {description && (
-        <p className="text-[10px] text-t-faint -mt-1">{description}</p>
-      )}
       {children}
-    </div>
+    </section>
   );
 }
 
@@ -224,38 +134,13 @@ function SectionCard({
    ═══════════════════════════════════════════ */
 
 const TABS = [
-  { id: "connection", label: "Connect", icon: Plug, color: "text-blue-400" },
-  { id: "vendor", label: "Vendor", icon: Cpu, color: "text-cyan-400" },
-  {
-    id: "station",
-    label: "Config",
-    icon: SlidersHorizontal,
-    color: "text-amber-400",
-  },
-  {
-    id: "simulation",
-    label: "Simulate",
-    icon: FlaskConical,
-    color: "text-pink-400",
-  },
-  {
-    id: "auth",
-    label: "Auth",
-    icon: KeyRound,
-    color: "text-emerald-400",
-  },
-  {
-    id: "composer",
-    label: "Send",
-    icon: MessageSquare,
-    color: "text-orange-400",
-  },
-  {
-    id: "macro",
-    label: "Macro",
-    icon: ListVideo,
-    color: "text-indigo-400",
-  },
+  { id: "connection", label: "Connect", icon: Plug },
+  { id: "vendor", label: "Vendor", icon: Cpu },
+  { id: "station", label: "Config", icon: SlidersHorizontal },
+  { id: "simulation", label: "Simulate", icon: FlaskConical },
+  { id: "auth", label: "Auth", icon: KeyRound },
+  { id: "composer", label: "Send", icon: MessageSquare },
+  { id: "macro", label: "Macro", icon: ListVideo },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -280,57 +165,71 @@ function ProfilesSection() {
     <SectionCard
       title="Saved Profiles"
       icon={<HardDrive className="h-3.5 w-3.5" />}
-      color="text-cyan-400"
       description="Save & restore config snapshots"
     >
-      <div className="flex items-center gap-2">
-        <Input
-          value={profileName}
-          onChange={(e) => setProfileName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSave()}
-          className="h-8 flex-1 bg-surface-inset border-b-default text-white text-[11px] rounded-lg focus-visible:ring-cyan-500/30"
-          placeholder="Profile name…"
-        />
+      <div className="flex items-end gap-2">
+        <Field label="Profile name" className="flex-1">
+          <Input
+            value={profileName}
+            onChange={(e) => setProfileName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSave()}
+            className="h-9 text-t-primary text-xs rounded-md"
+            placeholder="e.g. Staging CSMS"
+          />
+        </Field>
         <Button
+          variant="soft-brand"
           onClick={handleSave}
           disabled={!profileName.trim()}
-          className="h-8 px-3 bg-cyan-500/10 hover:bg-cyan-500/18 text-cyan-300 border border-cyan-500/20 font-bold text-[10px] uppercase tracking-wider rounded-lg cursor-pointer shrink-0"
         >
-          Save
+          Save profile
         </Button>
       </div>
       {savedProfiles.length > 0 && (
-        <div className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar mt-2">
+        <ul
+          aria-label="Saved profiles"
+          className="space-y-1.5 max-h-40 overflow-y-auto custom-scrollbar"
+        >
           {savedProfiles.map((p) => (
-            <div
+            <li
               key={p.name}
-              className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/2 border border-white/5"
+              className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-surface-card border border-b-default"
             >
               <div className="min-w-0">
-                <span className="text-[11px] font-medium text-slate-300 truncate block">
+                <span className="text-xs font-medium text-t-primary truncate block">
                   {p.name}
                 </span>
-                <span className="text-[9px] font-mono text-t-faint">
-                  {new Date(p.createdAt).toLocaleDateString()}
+                <span className="text-2xs font-mono text-t-muted">
+                  Saved {new Date(p.createdAt).toLocaleDateString()}
                 </span>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <button
+                <Button
+                  size="sm"
+                  variant="soft-brand"
+                  aria-label={`Load profile ${p.name}`}
                   onClick={() => loadProfile(p.name)}
-                  className="px-2 py-1 rounded text-[9px] font-bold text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/15 cursor-pointer transition-colors"
                 >
                   Load
-                </button>
-                <button
-                  onClick={() => deleteProfile(p.name)}
-                  className="p-1 rounded text-t-muted hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer transition-colors"
-                >
-                  <X className="h-3 w-3" />
-                </button>
+                </Button>
+                <ConfirmAction
+                  title={`Delete profile “${p.name}”?`}
+                  description="The saved snapshot is removed from this browser. Your current configuration is not affected."
+                  confirmLabel="Delete profile"
+                  onConfirm={() => deleteProfile(p.name)}
+                  trigger={
+                    <IconButton
+                      label={`Delete profile ${p.name}`}
+                      className="hover:text-danger"
+                    >
+                      <X aria-hidden="true" />
+                    </IconButton>
+                  }
+                />
               </div>
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </SectionCard>
   );
@@ -376,14 +275,13 @@ function FleetSpawnSection() {
     <SectionCard
       title="Fleet Spawn"
       icon={<Layers className="h-3.5 w-3.5" />}
-      color="text-emerald-400"
       description="Bulk create and connect multiple chargers for load testing"
     >
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-3 gap-2">
           <Field
             label="Count"
-            icon={<Hash className="h-3 w-3 text-emerald-400/60" />}
+            icon={<Hash className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               type="number"
@@ -391,44 +289,50 @@ function FleetSpawnSection() {
               max="50"
               value={count}
               onChange={(e) => setCount(e.target.value)}
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-emerald-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
             />
           </Field>
           <Field
             label="Prefix"
-            icon={<Tag className="h-3 w-3 text-emerald-400/60" />}
+            icon={<Tag className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               value={prefix}
               onChange={(e) => setPrefix(e.target.value)}
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-emerald-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
             />
           </Field>
           <Field
             label="Target CSMS"
-            icon={<Globe className="h-3 w-3 text-emerald-400/60" />}
+            icon={<Globe className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               value={endpoint}
               onChange={(e) => setEndpoint(e.target.value)}
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-emerald-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
             />
           </Field>
         </div>
-        <div className="flex gap-2 mt-1">
-          <button
+        <div className="flex gap-2">
+          <Button
+            variant="soft-success"
+            className="flex-1"
             onClick={handleSpawn}
             disabled={isSpawning}
-            className="flex-1 h-9 rounded-md bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-500/30 text-[11px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-2"
           >
-            <Zap className="h-3.5 w-3.5" /> Spawn & Connect
-          </button>
-          <button
-            onClick={handleDisconnectAll}
-            className="h-9 px-4 rounded-md bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white border border-red-500/20 text-[11px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-2"
-          >
-            <Plug className="h-3.5 w-3.5" /> Disconnect All
-          </button>
+            <Zap aria-hidden="true" /> Spawn &amp; connect
+          </Button>
+          <ConfirmAction
+            title={`Disconnect every “${prefix}” charger?`}
+            description="All chargers whose name starts with this prefix drop their CSMS connection. Open transactions stay open on the CSMS side."
+            confirmLabel="Disconnect all"
+            onConfirm={handleDisconnectAll}
+            trigger={
+              <Button variant="soft-danger">
+                <Plug aria-hidden="true" /> Disconnect all
+              </Button>
+            }
+          />
         </div>
       </div>
     </SectionCard>
@@ -445,63 +349,59 @@ function ConnectionTab() {
 
   return (
     <div className="space-y-4">
+      {locked && (
+        <Notice>
+          Endpoint, identity and security are locked while connected. Disconnect
+          to change them.
+        </Notice>
+      )}
       <SectionCard
         title="WebSocket Endpoint"
         icon={<Globe className="h-3.5 w-3.5" />}
-        color="text-blue-400"
       >
         <Field
           label="CSMS URL"
-          icon={<Globe className="h-3 w-3 text-blue-400/60" />}
+          icon={<Globe className="h-3 w-3" aria-hidden="true" />}
         >
           <Input
             value={config.endpoint}
             disabled={locked}
             onChange={(e) => updateConfig({ endpoint: e.target.value })}
-            className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-blue-500/30"
+            className="h-9 text-t-primary text-xs rounded-lg"
             placeholder="ws://localhost:9000"
           />
-          <div className="mt-2 flex items-center justify-between text-[11px]">
-            <span className="text-t-muted text-[10px]">
-              Targeting local CSMS?
-            </span>
+          <div className="mt-2 flex items-center justify-between text-xs">
+            <span className="text-t-muted text-xs">Targeting local CSMS?</span>
             <LocalhostGuideDialog
               trigger={
-                <button
-                  type="button"
-                  className="text-[#a78bfa] hover:text-[#c4b5fd] hover:underline flex items-center gap-1 text-[10px] cursor-pointer"
-                >
-                  Browser permission guide{" "}
-                  <ExternalLink className="h-2.5 w-2.5" />
-                </button>
+                <Button variant="link" size="xs" className="px-0">
+                  Browser permission guide
+                  <ExternalLink aria-hidden="true" />
+                </Button>
               }
             />
           </div>
         </Field>
       </SectionCard>
 
-      <SectionCard
-        title="Identity"
-        icon={<Hash className="h-3.5 w-3.5" />}
-        color="text-violet-400"
-      >
+      <SectionCard title="Identity" icon={<Hash className="h-3.5 w-3.5" />}>
         <div className="grid grid-cols-2 gap-3">
           <Field
             label="Charge Point ID"
-            icon={<Hash className="h-3 w-3 text-violet-400/60" />}
+            icon={<Hash className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               value={config.chargePointId}
               disabled={locked}
               onChange={(e) => updateConfig({ chargePointId: e.target.value })}
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-violet-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
             />
           </Field>
           <Field
             label="OCPP Version"
-            icon={<Layers className="h-3 w-3 text-violet-400/60" />}
+            icon={<Layers className="h-3 w-3" aria-hidden="true" />}
           >
-            <Dropdown
+            <OptionSelect
               value={config.ocppVersion}
               disabled={locked}
               options={[
@@ -514,19 +414,19 @@ function ConnectionTab() {
           </Field>
           <Field
             label="Default RFID Tag"
-            icon={<Tag className="h-3 w-3 text-violet-400/60" />}
+            icon={<Tag className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               value={config.rfidTag}
               onChange={(e) => updateConfig({ rfidTag: e.target.value })}
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-violet-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
             />
           </Field>
           <Field
             label="Connectors"
-            icon={<Plug className="h-3 w-3 text-violet-400/60" />}
+            icon={<Plug className="h-3 w-3" aria-hidden="true" />}
           >
-            <Dropdown
+            <OptionSelect
               value={String(config.numberOfConnectors)}
               disabled={locked}
               options={[
@@ -547,14 +447,13 @@ function ConnectionTab() {
       <SectionCard
         title="Security"
         icon={<Shield className="h-3.5 w-3.5" />}
-        color="text-rose-400"
         description="OCPP Security Profile for connection auth"
       >
         <Field
           label="Security Profile"
-          icon={<Shield className="h-3 w-3 text-rose-400/60" />}
+          icon={<Shield className="h-3 w-3" aria-hidden="true" />}
         >
-          <Dropdown
+          <OptionSelect
             value={String(config.securityProfile)}
             disabled={locked}
             options={[
@@ -574,7 +473,7 @@ function ConnectionTab() {
         {config.securityProfile > 0 && (
           <Field
             label="Basic Auth Password"
-            icon={<Shield className="h-3 w-3 text-rose-400/60" />}
+            icon={<Shield className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               type="password"
@@ -585,7 +484,7 @@ function ConnectionTab() {
                   basicAuthPassword: e.target.value,
                 })
               }
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-rose-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
               placeholder="Password..."
             />
           </Field>
@@ -614,49 +513,49 @@ const BOOT_FIELDS: {
   {
     key: "chargePointVendor",
     label: "Vendor",
-    icon: <Server className="h-3 w-3 text-cyan-400/60" />,
+    icon: <Server className="h-3 w-3" aria-hidden="true" />,
     required: true,
   },
   {
     key: "chargePointModel",
     label: "Model",
-    icon: <HardDrive className="h-3 w-3 text-cyan-400/60" />,
+    icon: <HardDrive className="h-3 w-3" aria-hidden="true" />,
     required: true,
   },
   {
     key: "chargePointSerialNumber",
     label: "CP Serial #",
-    icon: <Hash className="h-3 w-3 text-cyan-400/60" />,
+    icon: <Hash className="h-3 w-3" aria-hidden="true" />,
   },
   {
     key: "chargeBoxSerialNumber",
     label: "Box Serial #",
-    icon: <Hash className="h-3 w-3 text-cyan-400/60" />,
+    icon: <Hash className="h-3 w-3" aria-hidden="true" />,
   },
   {
     key: "firmwareVersion",
     label: "Firmware Ver.",
-    icon: <Wrench className="h-3 w-3 text-cyan-400/60" />,
+    icon: <Wrench className="h-3 w-3" aria-hidden="true" />,
   },
   {
     key: "iccid",
     label: "ICCID",
-    icon: <CreditCard className="h-3 w-3 text-cyan-400/60" />,
+    icon: <CreditCard className="h-3 w-3" aria-hidden="true" />,
   },
   {
     key: "imsi",
     label: "IMSI",
-    icon: <Smartphone className="h-3 w-3 text-cyan-400/60" />,
+    icon: <Smartphone className="h-3 w-3" aria-hidden="true" />,
   },
   {
     key: "meterType",
     label: "Meter Type",
-    icon: <Gauge className="h-3 w-3 text-cyan-400/60" />,
+    icon: <Gauge className="h-3 w-3" aria-hidden="true" />,
   },
   {
     key: "meterSerialNumber",
     label: "Meter Serial #",
-    icon: <Hash className="h-3 w-3 text-cyan-400/60" />,
+    icon: <Hash className="h-3 w-3" aria-hidden="true" />,
   },
 ];
 
@@ -669,10 +568,15 @@ function VendorTab() {
 
   return (
     <div className="space-y-4">
+      {locked && (
+        <Notice>
+          Hardware identity is sent in BootNotification when connecting, so it
+          is locked while connected.
+        </Notice>
+      )}
       <SectionCard
         title="Hardware Identity"
         icon={<Cpu className="h-3.5 w-3.5" />}
-        color="text-cyan-400"
         description="Sent to CSMS via BootNotification on connection."
       >
         <div className="grid grid-cols-2 gap-3">
@@ -686,7 +590,7 @@ function VendorTab() {
                     [key]: e.target.value,
                   } as any)
                 }
-                className="h-9 bg-surface-inset border-b-default text-white text-[12px] font-mono rounded-lg focus-visible:ring-cyan-500/30"
+                className="h-9 text-t-primary text-xs font-mono rounded-lg"
               />
             </Field>
           ))}
@@ -696,39 +600,40 @@ function VendorTab() {
       <SectionCard
         title="Vendor Custom Extensions"
         icon={<Server className="h-3.5 w-3.5" />}
-        color="text-indigo-400"
         description="DataTransfer & Boot customData"
       >
         <div className="space-y-3">
           <Field
             label="Vendor ID"
-            icon={<HardDrive className="h-3 w-3 text-indigo-400/60" />}
+            icon={<HardDrive className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               value={vendor?.vendorId ?? ""}
               onChange={(e) => updateVendorConfig({ vendorId: e.target.value })}
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] font-mono rounded-lg focus-visible:ring-indigo-500/30"
+              className="h-9 text-t-primary text-xs font-mono rounded-lg"
               placeholder="e.g. com.elmo.virtual"
             />
           </Field>
           <Field
             label="Custom Data Payload (JSON)"
-            icon={<SlidersHorizontal className="h-3 w-3 text-indigo-400/60" />}
+            icon={<SlidersHorizontal className="h-3 w-3" aria-hidden="true" />}
           >
-            <textarea
+            <Textarea
               value={vendor?.customDataStr ?? "{}"}
               onChange={(e) =>
                 updateVendorConfig({
                   customDataStr: e.target.value,
                 })
               }
-              className="w-full h-24 bg-white/3 border border-white/8 text-white text-[11px] font-mono rounded-lg p-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-indigo-500/30 resize-none custom-scrollbar"
+              className="h-24 resize-none custom-scrollbar"
               placeholder='{"customKey": "value"}'
               spellCheck={false}
             />
           </Field>
 
           <Button
+            variant="soft-brand"
+            className="w-full"
             onClick={() => {
               import("@/lib/ocppClient").then((m) =>
                 // getService is keyed by the slot id, not the OCPP identity.
@@ -736,12 +641,11 @@ function VendorTab() {
               );
             }}
             disabled={!vendor?.vendorId || locked !== true}
-            className="w-full h-8 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 font-bold text-[10px] uppercase tracking-wider rounded-lg transition-colors mt-2"
           >
+            <MessageSquare aria-hidden="true" />
             {locked !== true
-              ? "Connect to Send DataTransfer"
+              ? "Connect to send DataTransfer"
               : "Send DataTransfer"}
-            <MessageSquare className="h-3 w-3 ml-2 shrink-0 opacity-70" />
           </Button>
         </div>
       </SectionCard>
@@ -749,12 +653,11 @@ function VendorTab() {
       <SectionCard
         title="Simulated Vendor Errors"
         icon={<Plug className="h-3.5 w-3.5" />}
-        color="text-rose-400"
         description="Overrides standard StatusNotification error codes"
       >
         <Field
           label="Vendor Error Code"
-          icon={<MessageSquare className="h-3 w-3 text-rose-400/60" />}
+          icon={<MessageSquare className="h-3 w-3" aria-hidden="true" />}
         >
           <Input
             value={vendor?.vendorErrorCode ?? ""}
@@ -763,7 +666,7 @@ function VendorTab() {
                 vendorErrorCode: e.target.value,
               })
             }
-            className="h-9 bg-surface-inset border-b-default text-white text-[12px] font-mono rounded-lg focus-visible:ring-rose-500/30"
+            className="h-9 text-t-primary text-xs font-mono rounded-lg"
             placeholder="e.g. 0x01B (Optional)"
           />
         </Field>
@@ -790,6 +693,10 @@ const GROUP_16_LOCAL_AUTH = [
   "LocalAuthorizeOffline",
   "LocalPreAuthorize",
 ];
+
+/** DOM id for a device-model variable input (component/variable → safe id). */
+const dmId = (component: string, variable: string) =>
+  `dm-${component}-${variable}`.replace(/\W/g, "-");
 
 function StationConfigTab() {
   const { config, updateStationConfigKey, setDeviceVariable, deviceModel } =
@@ -818,33 +725,34 @@ function StationConfigTab() {
               key={compName}
               title={compName}
               icon={<SlidersHorizontal className="h-3.5 w-3.5" />}
-              color="text-amber-400"
               description={`${vars.length} vars · ${editableCount} writable`}
             >
               <div className="space-y-0.5 -mx-1">
                 {vars.map((v) => (
                   <div
                     key={`${v.component}/${v.variable}`}
-                    className="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-white/3 transition-colors"
+                    className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-lg hover:bg-surface-hover transition-colors"
                   >
                     <div className="flex-1 min-w-0 flex items-center gap-1.5 mr-2">
-                      <span
-                        className={`text-[11px] font-mono truncate ${
+                      <label
+                        htmlFor={dmId(v.component, v.variable)}
+                        className={`text-xs font-mono truncate ${
                           v.mutability === "ReadOnly"
-                            ? "text-t-faint"
+                            ? "text-t-muted"
                             : "text-t-secondary font-medium"
                         }`}
                         title={v.variable}
                       >
                         {v.variable}
-                      </span>
+                      </label>
                       {v.mutability === "ReadOnly" && (
                         <ReadOnlyBadge setMessage="SetVariables" />
                       )}
                     </div>
                     <Input
+                      id={dmId(v.component, v.variable)}
                       value={v.value}
-                      disabled={v.mutability === "ReadOnly"}
+                      readOnly={v.mutability === "ReadOnly"}
                       onChange={(e) =>
                         setDeviceVariable(
                           v.component,
@@ -852,7 +760,7 @@ function StationConfigTab() {
                           e.target.value,
                         )
                       }
-                      className="h-7 text-[10px] w-32 shrink-0 font-mono bg-surface-inset border-b-default text-white rounded-md focus-visible:ring-amber-500/30"
+                      className="h-8 w-36 shrink-0 font-mono"
                     />
                   </div>
                 ))}
@@ -896,37 +804,38 @@ function StationConfigTab() {
               key={groupName}
               title={groupName}
               icon={<SlidersHorizontal className="h-3.5 w-3.5" />}
-              color="text-amber-400"
               description={`${groupKeys.length} keys · ${editableCount} editable`}
             >
               <div className="space-y-0.5 -mx-1">
                 {groupKeys.map((k) => (
                   <div
                     key={k.key}
-                    className="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-white/3 transition-colors"
+                    className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-lg hover:bg-surface-hover transition-colors"
                   >
                     <div className="flex-1 min-w-0 flex items-center gap-1.5 mr-2">
-                      <span
-                        className={`text-[11px] font-mono truncate ${
+                      <label
+                        htmlFor={`cfg-${k.key}`}
+                        className={`text-xs font-mono truncate ${
                           k.readonly
-                            ? "text-t-faint"
+                            ? "text-t-muted"
                             : "text-t-secondary font-medium"
                         }`}
                         title={k.key}
                       >
                         {k.key}
-                      </span>
+                      </label>
                       {k.readonly && (
                         <ReadOnlyBadge setMessage="ChangeConfiguration" />
                       )}
                     </div>
                     <Input
+                      id={`cfg-${k.key}`}
                       value={k.value}
-                      disabled={k.readonly}
+                      readOnly={k.readonly}
                       onChange={(e) =>
                         updateStationConfigKey(k.key, e.target.value)
                       }
-                      className="h-7 text-[10px] w-32 shrink-0 font-mono bg-surface-inset border-b-default text-white rounded-md focus-visible:ring-amber-500/30"
+                      className="h-8 w-36 shrink-0 font-mono"
                     />
                   </div>
                 ))}
@@ -954,6 +863,9 @@ const FIRMWARE_STATUSES = [
   "InstallationFailed",
 ].map((s) => ({ label: s, value: s }));
 
+const formatDelay = (ms: number) =>
+  ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+
 function SimulationTab() {
   const { config, updateSimulation, isUploading, uploadSecondsLeft, status } =
     useActiveCharger();
@@ -966,12 +878,11 @@ function SimulationTab() {
       <SectionCard
         title="Diagnostics Upload"
         icon={<FileText className="h-3.5 w-3.5" />}
-        color="text-pink-400"
       >
         <div className="grid grid-cols-2 gap-3">
           <Field
             label="File Name"
-            icon={<FileText className="h-3 w-3 text-pink-400/60" />}
+            icon={<FileText className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               value={simulation.diagnosticFileName}
@@ -980,12 +891,12 @@ function SimulationTab() {
                   diagnosticFileName: e.target.value,
                 })
               }
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-pink-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
             />
           </Field>
           <Field
             label="Duration (s)"
-            icon={<Clock className="h-3 w-3 text-pink-400/60" />}
+            icon={<Clock className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               type="number"
@@ -995,12 +906,12 @@ function SimulationTab() {
                   diagnosticUploadTime: Number(e.target.value),
                 })
               }
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-pink-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
             />
           </Field>
         </div>
         <Field label="Final Status">
-          <Dropdown
+          <OptionSelect
             value={simulation.diagnosticStatus}
             options={[
               { label: "Uploaded", value: "Uploaded" },
@@ -1015,35 +926,32 @@ function SimulationTab() {
         </Field>
 
         {isUploading && (
-          <div className="flex items-center gap-2 p-2.5 rounded-lg bg-cyan-500/8 border border-cyan-500/15 text-cyan-300 text-[11px] animate-pulse">
-            <Upload className="h-3.5 w-3.5 animate-bounce shrink-0" />
+          <Notice live icon={<Upload aria-hidden="true" />}>
             Uploading…{" "}
-            <span className="font-mono font-bold">{uploadSecondsLeft}s</span>{" "}
+            <span className="font-mono font-semibold text-t-primary">
+              {uploadSecondsLeft}s
+            </span>{" "}
             left
-          </div>
+          </Notice>
         )}
 
         <Button
-          size="sm"
+          variant="soft-brand"
+          className="w-full"
           disabled={!isConnected || isUploading}
           onClick={() => ocppService.startDiagnosticsUpload()}
-          className="w-full h-8 bg-pink-500/10 hover:bg-pink-500/18 text-pink-300 border border-pink-500/15 text-[10px] font-bold uppercase tracking-wider rounded-lg cursor-pointer"
         >
-          <Upload className="mr-1.5 h-3 w-3" /> Trigger Upload
+          <Upload aria-hidden="true" /> Trigger upload
         </Button>
       </SectionCard>
 
       {/* Firmware */}
-      <SectionCard
-        title="Firmware"
-        icon={<Shield className="h-3.5 w-3.5" />}
-        color="text-emerald-400"
-      >
+      <SectionCard title="Firmware" icon={<Shield className="h-3.5 w-3.5" />}>
         <Field
           label="Firmware Status"
-          icon={<Shield className="h-3 w-3 text-emerald-400/60" />}
+          icon={<Shield className="h-3 w-3" aria-hidden="true" />}
         >
-          <Dropdown
+          <OptionSelect
             value={simulation.firmwareStatus}
             options={FIRMWARE_STATUSES}
             onChange={(v) =>
@@ -1052,14 +960,14 @@ function SimulationTab() {
           />
         </Field>
         <Button
-          size="sm"
+          variant="soft-brand"
+          className="w-full"
           disabled={!isConnected}
           onClick={() =>
             ocppService.sendFirmwareStatus(simulation.firmwareStatus)
           }
-          className="w-full h-8 bg-emerald-500/10 hover:bg-emerald-500/18 text-emerald-300 border border-emerald-500/15 text-[10px] font-bold uppercase tracking-wider rounded-lg cursor-pointer"
         >
-          <Shield className="mr-1.5 h-3 w-3" /> Send FirmwareStatus
+          <Shield aria-hidden="true" /> Send FirmwareStatusNotification
         </Button>
       </SectionCard>
 
@@ -1067,13 +975,12 @@ function SimulationTab() {
       <SectionCard
         title="Auto Charging"
         icon={<FlaskConical className="h-3.5 w-3.5" />}
-        color="text-violet-400"
         description="Configure the auto-charge state machine behavior. Target kWh is also the EV battery size SoC is computed against."
       >
         <div className="grid grid-cols-2 gap-3">
           <Field
             label="Target kWh"
-            icon={<Gauge className="h-3 w-3 text-violet-400/60" />}
+            icon={<Gauge className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               type="number"
@@ -1083,12 +990,12 @@ function SimulationTab() {
                   autoChargeTargetKWh: Number(e.target.value),
                 })
               }
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-violet-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
             />
           </Field>
           <Field
             label="Duration (s)"
-            icon={<Clock className="h-3 w-3 text-violet-400/60" />}
+            icon={<Clock className="h-3 w-3" aria-hidden="true" />}
           >
             <Input
               type="number"
@@ -1098,13 +1005,13 @@ function SimulationTab() {
                   autoChargeDurationSec: Number(e.target.value),
                 })
               }
-              className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-violet-500/30"
+              className="h-9 text-t-primary text-xs rounded-lg"
             />
           </Field>
         </div>
         <Field
           label="Meter Increment / tick (Wh)"
-          icon={<Gauge className="h-3 w-3 text-violet-400/60" />}
+          icon={<Gauge className="h-3 w-3" aria-hidden="true" />}
         >
           <Input
             type="number"
@@ -1114,7 +1021,7 @@ function SimulationTab() {
                 autoChargeMeterIncrement: Number(e.target.value),
               })
             }
-            className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-violet-500/30"
+            className="h-9 text-t-primary text-xs rounded-lg"
           />
         </Field>
       </SectionCard>
@@ -1123,20 +1030,20 @@ function SimulationTab() {
       <SectionCard
         title="MeterValues Measurands"
         icon={<Gauge className="h-3.5 w-3.5" />}
-        color="text-cyan-400"
         description="Choose which measurands are included in every MeterValues message"
       >
-        <div className="grid grid-cols-3 gap-x-3 gap-y-2">
+        <fieldset className="grid grid-cols-2 gap-x-3 gap-y-2 @xs:grid-cols-3">
+          <legend className="sr-only">Measurands to include</legend>
           {(
             [
               { key: "energy", label: "Energy" },
               { key: "power", label: "Power" },
-              { key: "soc", label: "SoC" },
+              { key: "soc", label: "State of charge" },
               { key: "voltage", label: "Voltage" },
               { key: "current", label: "Current" },
-              { key: "temperature", label: "Temp" },
-              { key: "frequency", label: "Freq" },
-              { key: "threePhase", label: "3-Phase" },
+              { key: "temperature", label: "Temperature" },
+              { key: "frequency", label: "Frequency" },
+              { key: "threePhase", label: "Three-phase" },
             ] as {
               key: keyof NonNullable<typeof simulation.measurands>;
               label: string;
@@ -1144,63 +1051,55 @@ function SimulationTab() {
           ).map(({ key, label }) => (
             <label
               key={key}
-              className="flex items-center gap-1.5 cursor-pointer group"
+              className="flex min-h-8 items-center gap-2 rounded-md px-1.5 cursor-pointer hover:bg-surface-hover"
             >
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={simulation.measurands?.[key] ?? false}
-                onChange={(e) =>
+                onCheckedChange={(checked) =>
                   updateSimulation({
                     measurands: {
                       ...(simulation.measurands ?? {}),
-                      [key]: e.target.checked,
+                      [key]: checked,
                     },
                   })
                 }
-                className="accent-cyan-500 h-3.5 w-3.5 rounded shrink-0"
               />
-              <span className="text-[11px] text-t-muted group-hover:text-t-secondary transition-colors">
-                {label}
-              </span>
+              <span className="text-xs text-t-secondary">{label}</span>
             </label>
           ))}
-        </div>
+        </fieldset>
       </SectionCard>
 
       {/* Response Latency */}
       <SectionCard
         title="Response Latency"
         icon={<Clock className="h-3.5 w-3.5" />}
-        color="text-amber-400"
         description="Add artificial delay to all OCPP responses to test CSMS timeouts"
       >
         <div className="flex items-center gap-3">
-          <input
-            type="range"
+          <Slider
+            thumbLabel="Response delay"
+            getAriaValueText={(_, value) => formatDelay(value)}
             min={0}
             max={30000}
             step={500}
-            value={simulation.responseDelayMs}
-            onChange={(e) =>
+            value={[simulation.responseDelayMs]}
+            onValueChange={(v) =>
               updateSimulation({
-                responseDelayMs: Number(e.target.value),
+                responseDelayMs: Array.isArray(v) ? v[0] : v,
               })
             }
-            className="flex-1 accent-amber-500 h-1.5 cursor-pointer"
+            className="flex-1"
           />
-          <span className="shrink-0 text-[11px] font-mono text-t-secondary tabular-nums w-14 text-right">
-            {simulation.responseDelayMs >= 1000
-              ? `${(simulation.responseDelayMs / 1000).toFixed(1)}s`
-              : `${simulation.responseDelayMs}ms`}
-          </span>
+          <output className="shrink-0 text-xs font-mono text-t-primary tabular-nums w-14 text-right">
+            {formatDelay(simulation.responseDelayMs)}
+          </output>
         </div>
         {simulation.responseDelayMs > 0 && (
-          <p className="text-[10px] text-amber-400/60 mt-1">
-            ⏱ All handler responses will be delayed by{" "}
-            {simulation.responseDelayMs >= 1000
-              ? `${(simulation.responseDelayMs / 1000).toFixed(1)}s`
-              : `${simulation.responseDelayMs}ms`}
-          </p>
+          <Notice tone="warning" icon={<Clock aria-hidden="true" />}>
+            Every response to the CSMS is delayed by{" "}
+            {formatDelay(simulation.responseDelayMs)}.
+          </Notice>
         )}
       </SectionCard>
 
@@ -1217,42 +1116,15 @@ function SimulationTab() {
    FAULT INJECTION SECTION
    ═══════════════════════════════════════════ */
 
+// All six are faults, so they share one (danger) treatment: colour carries
+// meaning, not decoration.
 const FAULTS = [
-  {
-    code: "GroundFailure",
-    label: "Ground Fault",
-    color: "text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20",
-  },
-  {
-    code: "OverVoltage",
-    label: "Over Voltage",
-    color:
-      "text-amber-400 bg-amber-500/10 border-amber-500/20 hover:bg-amber-500/20",
-  },
-  {
-    code: "PowerMeterFailure",
-    label: "Meter Fail",
-    color:
-      "text-orange-400 bg-orange-500/10 border-orange-500/20 hover:bg-orange-500/20",
-  },
-  {
-    code: "EVCommunicationError",
-    label: "EV Comm Error",
-    color:
-      "text-pink-400 bg-pink-500/10 border-pink-500/20 hover:bg-pink-500/20",
-  },
-  {
-    code: "ReaderFailure",
-    label: "Reader Fail",
-    color:
-      "text-violet-400 bg-violet-500/10 border-violet-500/20 hover:bg-violet-500/20",
-  },
-  {
-    code: "InternalError",
-    label: "Internal Error",
-    color:
-      "text-rose-400 bg-rose-500/10 border-rose-500/20 hover:bg-rose-500/20",
-  },
+  { code: "GroundFailure", label: "Ground fault" },
+  { code: "OverVoltage", label: "Over voltage" },
+  { code: "PowerMeterFailure", label: "Meter failure" },
+  { code: "EVCommunicationError", label: "EV comm error" },
+  { code: "ReaderFailure", label: "Reader failure" },
+  { code: "InternalError", label: "Internal error" },
 ] as const;
 
 function FaultInjectionSection() {
@@ -1265,37 +1137,40 @@ function FaultInjectionSection() {
       ocppService.triggerFault(i, code);
     }
     setLastFault(code);
-    setTimeout(() => setLastFault(""), 2000);
+    setTimeout(() => setLastFault(""), 3000);
   };
 
   return (
     <SectionCard
       title="Fault Injection"
       icon={<AlertTriangle className="h-3.5 w-3.5" />}
-      color="text-red-400"
-      description="Simulate hardware faults — stops active transactions and sends Faulted status"
+      description="Simulate hardware faults on every connector. Stops active transactions and sends Faulted status."
     >
       <div className="grid grid-cols-2 gap-2">
         {FAULTS.map((f) => (
-          <button
+          <Button
+            size="sm"
             key={f.code}
+            variant="soft-danger"
+            className="justify-start"
             disabled={!isConnected}
             onClick={() => inject(f.code)}
-            className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
-              f.color
-            } ${lastFault === f.code ? "ring-1 ring-white/30 scale-95" : ""}`}
           >
-            <Zap className="h-3 w-3" />
+            <Zap aria-hidden="true" />
             {f.label}
-          </button>
+          </Button>
         ))}
       </div>
-      {lastFault && (
-        <p className="text-[10px] text-red-400/80 mt-2 animate-pulse">
-          ⚡ Injected fault:{" "}
-          <span className="font-mono font-bold">{lastFault}</span>
-        </p>
-      )}
+      <div role="status">
+        {lastFault && (
+          <Notice tone="danger" icon={<AlertTriangle aria-hidden="true" />}>
+            Injected fault{" "}
+            <span className="font-mono font-semibold text-t-primary">
+              {lastFault}
+            </span>
+          </Notice>
+        )}
+      </div>
     </SectionCard>
   );
 }
@@ -1321,44 +1196,44 @@ function RawPayloadSection() {
     <SectionCard
       title="Raw Payload Injection"
       icon={<Terminal className="h-3.5 w-3.5" />}
-      color="text-rose-400"
-      description="Send arbitrary strings directly over the WebSocket — bypasses OCPP validation"
+      description="Send arbitrary strings directly over the WebSocket. Bypasses OCPP validation."
     >
-      <textarea
-        value={raw}
-        onChange={(e) => setRaw(e.target.value)}
-        rows={3}
-        spellCheck={false}
-        className="w-full bg-black/30 border border-b-default rounded-lg p-3 font-mono text-[11px] text-t-secondary resize-y focus:outline-none focus:ring-1 focus:ring-rose-500/40 placeholder:text-t-faint"
-        placeholder='[2,"uuid","Action",{...}]'
-      />
+      <Field
+        label="Raw frame"
+        hint={
+          <>
+            Use OCPP Call format{" "}
+            <code className="font-mono text-t-secondary">
+              [2, &quot;id&quot;, &quot;Action&quot;, &#123;&#125;]
+            </code>{" "}
+            or send malformed data to test error handling.
+          </>
+        }
+      >
+        <Textarea
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          rows={3}
+          spellCheck={false}
+          placeholder='[2,"uuid","Action",{...}]'
+        />
+      </Field>
       <Button
-        size="sm"
+        variant={sent ? "soft-success" : "soft-danger"}
+        className="w-full"
         disabled={!isConnected || !raw.trim()}
         onClick={handleSend}
-        className={`w-full h-8 text-[10px] font-bold uppercase tracking-wider rounded-lg cursor-pointer transition-all ${
-          sent
-            ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
-            : "bg-rose-500/10 hover:bg-rose-500/18 text-rose-300 border border-rose-500/15"
-        }`}
       >
         {sent ? (
           <>
-            <Check className="mr-1.5 h-3 w-3" /> Sent!
+            <Check aria-hidden="true" /> Sent
           </>
         ) : (
           <>
-            <Send className="mr-1.5 h-3 w-3" /> Inject Raw Payload
+            <Send aria-hidden="true" /> Inject raw payload
           </>
         )}
       </Button>
-      <p className="text-[9px] text-t-faint mt-1">
-        Tip: Use OCPP Call format{" "}
-        <code className="text-rose-400/60">
-          [2, &quot;id&quot;, &quot;Action&quot;, &#123;&#125;]
-        </code>{" "}
-        or send completely malformed data to test error handling.
-      </p>
     </SectionCard>
   );
 }
@@ -1366,13 +1241,14 @@ function RawPayloadSection() {
    LOCAL AUTH LIST TAB
    ═══════════════════════════════════════════ */
 
-const STATUS_COLORS: Record<string, string> = {
-  Accepted: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
-  Blocked: "text-red-400 bg-red-500/10 border-red-500/20",
-  Expired: "text-amber-400 bg-amber-500/10 border-amber-500/20",
-  Invalid: "text-rose-400 bg-rose-500/10 border-rose-500/20",
-  ConcurrentTx: "text-violet-400 bg-violet-500/10 border-violet-500/20",
-};
+const STATUS_TONE: Record<string, "success" | "danger" | "warning" | "brand"> =
+  {
+    Accepted: "success",
+    Blocked: "danger",
+    Expired: "warning",
+    Invalid: "danger",
+    ConcurrentTx: "brand",
+  };
 
 function LocalAuthListTab() {
   const { localAuthList, localAuthListVersion } = useActiveCharger();
@@ -1393,72 +1269,76 @@ function LocalAuthListTab() {
       <SectionCard
         title="Local Authorization List"
         icon={<KeyRound className="h-3.5 w-3.5" />}
-        color="text-emerald-400"
-        description={`List version: ${localAuthListVersion} · ${localAuthList.length} entries`}
+        description={`List version ${localAuthListVersion} · ${localAuthList.length} entries`}
       >
-        {/* Search */}
         {localAuthList.length > 0 && (
-          <div className="relative mb-3">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-t-faint" />
+          <div className="relative">
+            <Search
+              aria-hidden="true"
+              className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-t-muted"
+            />
             <Input
+              type="search"
+              aria-label="Filter by ID tag or status"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search idTag or status..."
-              className="h-8 pl-8 bg-surface-inset border-b-default text-white text-[11px] rounded-lg focus-visible:ring-emerald-500/30"
+              placeholder="Filter by ID tag or status"
+              className="h-9 pl-9 text-t-primary text-xs rounded-md"
             />
           </div>
         )}
 
-        {/* Table */}
         {filtered.length > 0 ? (
-          <div className="rounded-lg border border-b-default overflow-hidden">
-            {/* Header */}
-            <div className="grid grid-cols-[1fr_80px_90px] gap-2 px-3 py-1.5 bg-surface-inset text-[9px] font-bold text-t-faint uppercase tracking-wider">
-              <span>ID Tag</span>
-              <span>Status</span>
-              <span>Expiry</span>
-            </div>
-            {/* Rows */}
-            <div className="divide-y divide-white/5 max-h-100 overflow-y-auto custom-scrollbar">
-              {filtered.map((entry) => {
-                const status = entry.idTagInfo?.status ?? "Unknown";
-                const expiry = entry.idTagInfo?.expiryDate;
-                return (
-                  <div
-                    key={entry.idTag}
-                    className="grid grid-cols-[1fr_80px_90px] gap-2 px-3 py-2 text-[11px] hover:bg-surface-hover transition-colors"
-                  >
-                    <span className="font-mono text-t-secondary truncate">
-                      {entry.idTag}
-                    </span>
-                    <span
-                      className={`inline-flex items-center justify-center px-1.5 py-0.5 rounded text-[9px] font-bold border ${
-                        STATUS_COLORS[status] ??
-                        "text-t-faint bg-white/5 border-white/10"
-                      }`}
-                    >
-                      {status}
-                    </span>
-                    <span className="text-[9px] text-t-faint font-mono truncate">
-                      {expiry ? new Date(expiry).toLocaleDateString() : "—"}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+          <div className="max-h-100 overflow-y-auto custom-scrollbar rounded-lg border border-b-default">
+            <Table>
+              <TableCaption className="sr-only">
+                Local authorization list entries
+              </TableCaption>
+              <TableHeader className="sticky top-0 bg-surface-elevated">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>ID tag</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Expiry</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((entry) => {
+                  const status = entry.idTagInfo?.status ?? "Unknown";
+                  const expiry = entry.idTagInfo?.expiryDate;
+                  return (
+                    <TableRow key={entry.idTag}>
+                      <TableCell className="max-w-0 truncate px-3 font-mono text-t-primary">
+                        {entry.idTag}
+                      </TableCell>
+                      <TableCell className="px-3">
+                        <Badge variant={STATUS_TONE[status] ?? "neutral"}>
+                          {status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="px-3 font-mono text-t-secondary">
+                        {expiry ? new Date(expiry).toLocaleDateString() : "—"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-8 text-center">
-            <KeyRound className="h-8 w-8 text-[#232636] mb-3" />
-            <p className="text-[11px] text-t-muted font-semibold">
+            <KeyRound
+              className="h-8 w-8 text-t-muted mb-3"
+              aria-hidden="true"
+            />
+            <p className="text-sm text-t-secondary font-semibold">
               {localAuthList.length === 0
                 ? "No entries yet"
                 : "No matching entries"}
             </p>
-            <p className="text-[9px] text-t-faint mt-1">
+            <p className="text-xs text-t-muted mt-1">
               {localAuthList.length === 0
-                ? "Connect to a CSMS and wait for a SendLocalList command"
-                : "Try a different search term"}
+                ? "Connect to a CSMS and wait for a SendLocalList command."
+                : "Try a different filter."}
             </p>
           </div>
         )}
@@ -1530,29 +1410,21 @@ function MessageComposerTab() {
       <SectionCard
         title="Send OCPP Message"
         icon={<MessageSquare className="h-3.5 w-3.5" />}
-        color="text-orange-400"
         description="Send any CP → CSMS action with custom payload"
       >
         <Field
           label="Action"
-          icon={<MessageSquare className="h-3 w-3 text-orange-400/60" />}
+          icon={<MessageSquare className="h-3 w-3" aria-hidden="true" />}
         >
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <Dropdown
-                value={action}
-                options={OCPP_ACTIONS.map((a) => ({
-                  label: a,
-                  value: a,
-                }))}
-                onChange={(v) => setAction(v)}
-              />
-            </div>
-          </div>
+          <OptionSelect
+            value={action}
+            options={OCPP_ACTIONS}
+            onChange={(v) => setAction(v)}
+          />
         </Field>
 
         <Field label="Payload (JSON)">
-          <textarea
+          <Textarea
             value={payload}
             onChange={(e) => {
               setPayload(e.target.value);
@@ -1560,23 +1432,29 @@ function MessageComposerTab() {
             }}
             rows={6}
             spellCheck={false}
-            className="w-full bg-black/30 border border-b-default rounded-lg p-3 font-mono text-[11px] text-t-secondary resize-y focus:outline-none focus:ring-1 focus:ring-orange-500/40 placeholder:text-t-faint"
+            aria-invalid={jsonError ? true : undefined}
+            aria-errormessage={jsonError ? "composer-json-error" : undefined}
             placeholder='{ "key": "value" }'
           />
           {jsonError && (
-            <p className="text-[10px] text-rose-400 font-mono mt-1">
-              {jsonError}
+            <p
+              id="composer-json-error"
+              role="alert"
+              className="text-xs text-danger"
+            >
+              {jsonError}. Check for missing quotes, commas or braces.
             </p>
           )}
         </Field>
 
         <Button
+          variant="default"
+          className="w-full"
           disabled={!isConnected || sending}
           onClick={handleSend}
-          className="w-full h-9 bg-orange-500/12 hover:bg-orange-500/22 text-orange-300 border border-orange-500/20 font-bold text-[11px] uppercase tracking-wider rounded-lg cursor-pointer gap-2"
         >
-          <Send className="h-3.5 w-3.5" />
-          {sending ? "Sending…" : "Send"}
+          <Send aria-hidden="true" />
+          {sending ? "Sending…" : isConnected ? "Send" : "Connect to send"}
         </Button>
       </SectionCard>
 
@@ -1585,24 +1463,26 @@ function MessageComposerTab() {
         <SectionCard
           title="History"
           icon={<Clock className="h-3.5 w-3.5" />}
-          color="text-t-muted"
+          description="Select an entry to load it back into the composer."
         >
-          <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
+          <ul className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar">
             {history.map((h, i) => (
-              <button
-                key={`${i?.toString()}-${h.action}`}
-                onClick={() => loadFromHistory(h)}
-                className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/2 hover:bg-white/5 border border-white/5 transition-colors cursor-pointer text-left"
-              >
-                <span className="text-[11px] font-medium text-slate-300 truncate">
-                  {h.action}
-                </span>
-                <span className="text-[9px] font-mono text-t-faint shrink-0">
-                  {h.timestamp}
-                </span>
-              </button>
+              <li key={`${i?.toString()}-${h.action}`}>
+                <Button
+                  variant="neutral"
+                  onClick={() => loadFromHistory(h)}
+                  className="w-full justify-between font-normal"
+                >
+                  <span className="text-xs font-medium text-t-primary truncate">
+                    {h.action}
+                  </span>
+                  <span className="text-2xs font-mono text-t-muted shrink-0">
+                    {h.timestamp}
+                  </span>
+                </Button>
+              </li>
             ))}
-          </div>
+          </ul>
         </SectionCard>
       )}
     </div>
@@ -1708,11 +1588,10 @@ function MacroTab() {
       <SectionCard
         title="Automated Scenarios"
         icon={<ListVideo className="h-4 w-4" />}
-        color="text-indigo-400"
         description="Run pre-recorded sequences of OCPP operations"
       >
-        <div className="flex flex-col gap-4">
-          <Dropdown
+        <Field label="Scenario" hint={macroToDisplay.description}>
+          <OptionSelect
             value={String(selectedMacroIdx)}
             options={prebuiltMacros.map((m, i) => ({
               label: m.name,
@@ -1721,82 +1600,93 @@ function MacroTab() {
             onChange={(v) => setSelectedMacroIdx(Number(v))}
             disabled={isRunning}
           />
-          <div className="text-xs text-t-muted italic -mt-2">
-            {macroToDisplay.description}
-          </div>
+        </Field>
 
-          <div className="p-3 bg-surface-inset rounded-lg border border-b-default space-y-2">
-            <h4 className="text-[10px] uppercase tracking-widest text-[#5d6577] mb-3">
-              Scenario Steps
-            </h4>
-            <div className="flex flex-col gap-1.5 max-h-62.5 overflow-y-auto custom-scrollbar">
-              {macroToDisplay.steps.map((step, idx) => {
-                const isActive = isRunning && scenario.currentStep === idx;
-                const isPast = isRunning && scenario.currentStep > idx;
-                return (
-                  <div
-                    key={`${activeMacro.name}-step-${idx?.toString()}`}
-                    className={`flex items-center gap-3 p-2 rounded text-[11px] border ${
-                      isActive
-                        ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-300"
-                        : isPast
-                          ? "bg-emerald-500/5 border-transparent text-[#5d6577]"
-                          : "bg-[#181a24] border-transparent text-[#8a91a6]"
-                    }`}
-                  >
-                    <span className="w-4 font-mono select-none opacity-50">
-                      {idx + 1}.
-                    </span>
-                    <span className="font-bold uppercase tracking-wider w-28 shrink-0">
-                      {step.action}
-                    </span>
-                    <span className="text-[10px] opacity-70 font-mono truncate">
-                      {step.params ? JSON.stringify(step.params) : ""}
-                    </span>
-                    <span className="ml-auto opacity-50 font-mono">
-                      {step.delayMs}ms
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+        <div className="rounded-lg border border-b-default bg-surface-card p-3">
+          <h4 className="mb-2 text-2xs font-semibold uppercase tracking-wider text-t-muted">
+            Steps
+          </h4>
+          <ol className="flex flex-col gap-1.5 max-h-62.5 overflow-y-auto custom-scrollbar">
+            {macroToDisplay.steps.map((step, idx) => {
+              const isActive = isRunning && scenario.currentStep === idx;
+              const isPast = isRunning && scenario.currentStep > idx;
+              return (
+                <li
+                  key={`${activeMacro.name}-step-${idx?.toString()}`}
+                  aria-current={isActive ? "step" : undefined}
+                  className={`flex items-center gap-3 rounded-md border p-2 text-xs ${
+                    isActive
+                      ? "border-brand/50 bg-brand-subtle text-brand-strong"
+                      : isPast
+                        ? "border-transparent bg-success/5 text-t-muted"
+                        : "border-transparent bg-surface-inset text-t-secondary"
+                  }`}
+                >
+                  <span className="w-5 shrink-0 font-mono text-t-muted">
+                    {isPast ? (
+                      <Check
+                        className="size-3.5 text-success"
+                        aria-label="Done"
+                      />
+                    ) : (
+                      `${idx + 1}.`
+                    )}
+                  </span>
+                  <span className="w-32 shrink-0 font-semibold">
+                    {step.action}
+                  </span>
+                  <span className="truncate font-mono text-t-muted">
+                    {step.params ? JSON.stringify(step.params) : ""}
+                  </span>
+                  <span className="ml-auto shrink-0 font-mono text-t-muted">
+                    {step.delayMs}ms
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
 
-          <div className="flex gap-2">
-            {!isRunning ? (
-              <>
-                <button
-                  onClick={handleRun}
-                  className="flex-1 h-10 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-2"
-                >
-                  <Play className="h-4 w-4" /> Run Macro
-                </button>
-                <button
-                  onClick={handleRunAll}
-                  className="flex-[0.5] h-10 rounded-md bg-[#252836] border border-indigo-500/30 hover:bg-indigo-500/20 text-indigo-400 font-bold uppercase tracking-widest transition-colors flex items-center justify-center"
-                  title="Run on ALL active chargers"
-                >
-                  Run on All
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  onClick={handleStop}
-                  className="flex-1 h-10 rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-2 animate-pulse"
-                >
-                  <Square className="h-4 w-4" fill="currentColor" /> Stop
-                </button>
-                <button
-                  onClick={handleStopAll}
-                  className="flex-[0.5] h-10 rounded-md bg-[#252836] border border-rose-500/30 hover:bg-rose-500/20 text-rose-400 font-bold uppercase tracking-widest transition-colors flex items-center justify-center"
-                  title="Stop on ALL active chargers"
-                >
-                  Stop All
-                </button>
-              </>
-            )}
-          </div>
+        <div className="flex gap-2">
+          {!isRunning ? (
+            <>
+              <Button
+                variant="default"
+                size="lg"
+                className="flex-1"
+                onClick={handleRun}
+              >
+                <Play aria-hidden="true" /> Run scenario
+              </Button>
+              <Button
+                variant="neutral"
+                size="lg"
+                onClick={handleRunAll}
+                title="Run on every connected charger"
+              >
+                Run on all
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="danger"
+                size="lg"
+                className="flex-1"
+                onClick={handleStop}
+              >
+                <Square aria-hidden="true" fill="currentColor" /> Stop
+              </Button>
+              <Button
+                variant="soft-danger"
+                size="lg"
+                onClick={handleStopAll}
+                title="Stop on every charger"
+              >
+                Stop all
+              </Button>
+            </>
+          )}
         </div>
       </SectionCard>
     </div>
@@ -1809,57 +1699,71 @@ function MacroTab() {
 
 export function ConfigPanel({ onClose }: { onClose: () => void }) {
   const [activeTab, setActiveTab] = useState<TabId>("connection");
+  const uid = useId();
 
   return (
-    <div className="flex flex-col h-full">
+    <aside
+      aria-labelledby={`${uid}-title`}
+      className="@container flex flex-col h-full bg-surface-card"
+    >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5 shrink-0">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-b-subtle shrink-0">
         <div className="flex items-center gap-2">
-          <div className="h-6 w-6 rounded-md bg-linear-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
-            <Settings2 className="h-3 w-3 text-white" />
+          <div className="size-7 rounded-md bg-primary flex items-center justify-center">
+            <Settings2 className="size-4 text-white" aria-hidden="true" />
           </div>
-          <span className="text-[13px] font-bold text-white">Config</span>
+          <h2
+            id={`${uid}-title`}
+            className="text-sm font-semibold text-t-primary"
+          >
+            Configuration
+          </h2>
         </div>
-        <button
-          onClick={onClose}
-          className="h-6 w-6 rounded-md flex items-center justify-center text-t-muted hover:text-white hover:bg-surface-hover transition-colors cursor-pointer"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
+        <IconButton label="Close configuration panel" onClick={onClose}>
+          <X aria-hidden="true" />
+        </IconButton>
       </div>
 
-      {/* Tab strip */}
-      <div className="flex items-center gap-0.5 px-3 py-2 border-b border-white/5 shrink-0">
-        {TABS.map((tab) => {
-          const Icon = tab.icon;
-          const active = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
-                active
-                  ? `bg-surface-inset ${tab.color} border border-b-default`
-                  : "text-t-muted hover:text-t-secondary hover:bg-surface-hover border border-transparent"
-              }`}
-            >
-              <Icon className="h-3 w-3" />
-              <span className="hidden xl:inline">{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
+      {/* shadcn Tabs (Base UI): arrow keys, Home/End and tab/panel wiring */}
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => setActiveTab(v as TabId)}
+        className="flex-1 min-h-0 gap-0"
+      >
+        <div className="px-3 py-2 border-b border-b-subtle shrink-0">
+          <TabsList
+            aria-label="Configuration sections"
+            activateOnFocus
+            className="grid w-full grid-cols-4 @xl:grid-cols-7 h-auto bg-transparent p-0"
+          >
+            {TABS.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <TabsTrigger key={tab.id} value={tab.id}>
+                  <Icon aria-hidden="true" />
+                  {tab.label}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+        </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-3">
-        {activeTab === "connection" && <ConnectionTab />}
-        {activeTab === "vendor" && <VendorTab />}
-        {activeTab === "station" && <StationConfigTab />}
-        {activeTab === "simulation" && <SimulationTab />}
-        {activeTab === "auth" && <LocalAuthListTab />}
-        {activeTab === "composer" && <MessageComposerTab />}
-        {activeTab === "macro" && <MacroTab />}
-      </div>
-    </div>
+        {TABS.map((tab) => (
+          <TabsContent
+            key={tab.id}
+            value={tab.id}
+            className="@container min-h-0 flex-1 overflow-y-auto custom-scrollbar p-3"
+          >
+            {tab.id === "connection" && <ConnectionTab />}
+            {tab.id === "vendor" && <VendorTab />}
+            {tab.id === "station" && <StationConfigTab />}
+            {tab.id === "simulation" && <SimulationTab />}
+            {tab.id === "auth" && <LocalAuthListTab />}
+            {tab.id === "composer" && <MessageComposerTab />}
+            {tab.id === "macro" && <MacroTab />}
+          </TabsContent>
+        ))}
+      </Tabs>
+    </aside>
   );
 }

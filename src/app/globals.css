@@ -47,14 +47,39 @@
   --color-b-subtle: var(--b-subtle);
   --color-b-default: var(--b-default);
   --color-b-strong: var(--b-strong);
+  --color-b-control: var(--b-control);
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-subtle: var(--brand-subtle);
+  --color-success: var(--success);
+  --color-success-fill: var(--success-fill);
+  --color-warning: var(--warning);
+  --color-warning-fill: var(--warning-fill);
+  --color-danger: var(--danger);
+  --color-danger-fill: var(--danger-fill);
+  --color-info: var(--info);
+}
+
+/* Smallest permitted text size. Nothing in the UI goes below 11px. */
+@theme {
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
 }
 
 /* ══════════════════════════════════════
    COLOR PALETTE — Violet/Purple + Neutral Dark
    Matches the ocpp-ws-io logo brand
+
+   Contrast targets (WCAG 2.1 AA / ISO/IEC 40500, ISO 9241-112):
+   · text tokens ≥ 4.5:1 on every surface token
+   · b-control (form field outlines) ≥ 3:1 on base / inset / card
+   · white on primary, success-fill, danger-fill ≥ 4.5:1;
+     warning-fill carries dark text instead
    ══════════════════════════════════════ */
 
 .dark {
+  /* Native controls (select popups, checkboxes, date pickers) render dark. */
+  color-scheme: dark;
   --radius: 0.5rem;
 
   /* ── Base surfaces ── */
@@ -66,24 +91,38 @@
   --popover-foreground: #f0f2f5;
 
   /* ── Primary: Violet/Purple ── */
-  --primary: #8b5cf6;
+  --primary: #7c3aed;
   --primary-foreground: #ffffff;
 
   /* ── Neutral surfaces ── */
   --secondary: #1f2231;
   --secondary-foreground: #f0f2f5;
   --muted: #1f2231;
-  --muted-foreground: #737b8c;
+  --muted-foreground: #8b93a5;
   --accent: #251f38;
   --accent-foreground: #c4b5fd;
 
   /* ── Destructive ── */
-  --destructive: #f43f5e;
+  --destructive: #fb7185;
 
   /* ── Borders ── */
   --border: #282b3a;
-  --input: #1d1f2b;
-  --ring: #8b5cf6;
+  --input: #60687e;
+  --ring: #a78bfa;
+
+  /* ── Brand (violet) as text and tint ── */
+  --brand: #a78bfa;
+  --brand-strong: #c4b5fd;
+  --brand-subtle: rgba(139, 92, 246, 0.14);
+
+  /* ── Status: -fg for text on dark, -fill for solid buttons ── */
+  --success: #34d399;
+  --success-fill: #15803d;
+  --warning: #fbbf24;
+  --warning-fill: #f59e0b;
+  --danger: #fb7185;
+  --danger-fill: #e11d48;
+  --info: #38bdf8;
 
   /* ── Semantic surfaces ── */
   --surface-base: #0f1117;
@@ -96,13 +135,14 @@
   /* ── Semantic text ── */
   --t-primary: #f0f2f5;
   --t-secondary: #a0a8b8;
-  --t-muted: #5d6577;
-  --t-faint: #383e50;
+  --t-muted: #8b93a5;
+  --t-faint: #858da0;
 
   /* ── Semantic borders ── */
   --b-subtle: #232636;
   --b-default: #282b3a;
   --b-strong: #343848;
+  --b-control: #60687e;
 }
 
 /* ══════════════════════════════════════
@@ -121,6 +161,41 @@
     @apply text-foreground antialiased;
     min-height: 100vh;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+/* ══════════════════════════════════════
+   KEYBOARD FOCUS & MOTION (ISO 9241-110 / -171, WCAG 2.4.7, 2.3.3)
+
+   Unlayered on purpose: it must win over `outline-none` utilities so
+   every interactive element shows where keyboard focus is.
+   ══════════════════════════════════════ */
+
+:where(
+    a[href],
+    button,
+    input,
+    select,
+    textarea,
+    summary,
+    [role="button"],
+    [role="tab"],
+    [role="switch"],
+    [role="checkbox"],
+    [tabindex]:not([tabindex="-1"])
+  ):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -189,20 +264,19 @@ header {
 
 .glass-input {
   background: #121420 !important;
-  border: 1px solid #282b3a !important;
+  border: 1px solid var(--b-control) !important;
   color: #f0f2f5 !important;
   transition:
     border-color 0.2s,
     box-shadow 0.2s;
 }
 .glass-input::placeholder {
-  color: #383e50;
+  color: var(--t-faint);
 }
 .glass-input:focus,
 .glass-input:focus-within {
-  border-color: #8b5cf6 !important;
+  border-color: var(--ring) !important;
   box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.14) !important;
-  outline: none;
 }
 .glass-input:disabled {
   opacity: 0.4;
@@ -233,16 +307,15 @@ header {
    SCROLLBARS
    ══════════════════════════════════════ */
 
+/* Always visible: a scrollbar that only appears on hover hides the fact
+   that there is more content (ISO 9241-110 self-descriptiveness). */
 * {
   scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-*:hover {
-  scrollbar-color: #282b3a transparent;
+  scrollbar-color: #4b5268 transparent;
 }
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -251,35 +324,23 @@ header {
   display: none;
 }
 ::-webkit-scrollbar-thumb {
-  background: transparent;
+  background: #3a3f52;
   border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
-*:hover::-webkit-scrollbar-thumb {
-  background: #282b3a;
+::-webkit-scrollbar-thumb:hover {
+  background: #555c73;
+  background-clip: padding-box;
 }
-*:hover::-webkit-scrollbar-thumb:hover {
-  background: #383e50;
-}
-*:hover::-webkit-scrollbar-thumb:active {
+::-webkit-scrollbar-thumb:active {
   background: #8b5cf6;
+  background-clip: padding-box;
 }
 
 .custom-scrollbar {
   scrollbar-width: thin;
-  scrollbar-color: #232636 transparent;
-}
-.custom-scrollbar::-webkit-scrollbar {
-  width: 5px;
-}
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #232636;
-  border-radius: 9999px;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #343848;
+  scrollbar-color: #4b5268 transparent;
 }
 
 /* ══════════════════════════════════════
@@ -343,62 +404,64 @@ header {
    BUTTON UTILITIES — gradient fills
    ══════════════════════════════════════ */
 
+/* Solid fills whose label colour clears 4.5:1 across the whole button —
+   a gradient is only as legible as its lightest end. */
+
 .btn-primary {
-  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  background: #7c3aed;
   color: #fff;
-  border: 1px solid rgba(139, 92, 246, 0.4);
+  border: 1px solid #8b5cf6;
   box-shadow: 0 2px 12px rgba(139, 92, 246, 0.2);
-  transition: all 0.2s;
+  transition:
+    background-color 0.15s,
+    box-shadow 0.15s;
 }
-.btn-primary:hover {
-  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.4);
-  transform: translateY(-1px);
+.btn-primary:hover:not(:disabled) {
+  background: #6d28d9;
+  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.35);
 }
 
 .btn-success {
-  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  background: #15803d;
   color: #fff;
-  border: 1px solid rgba(34, 197, 94, 0.4);
-  box-shadow: 0 2px 12px rgba(34, 197, 94, 0.18);
-  transition: all 0.2s;
+  border: 1px solid #16a34a;
+  transition: background-color 0.15s;
 }
-.btn-success:hover {
-  box-shadow: 0 4px 20px rgba(34, 197, 94, 0.3);
-  transform: translateY(-1px);
+.btn-success:hover:not(:disabled) {
+  background: #166534;
 }
 
 .btn-danger {
-  background: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+  background: #e11d48;
   color: #fff;
-  border: 1px solid rgba(244, 63, 94, 0.4);
-  box-shadow: 0 2px 12px rgba(244, 63, 94, 0.18);
-  transition: all 0.2s;
+  border: 1px solid #f43f5e;
+  transition: background-color 0.15s;
 }
-.btn-danger:hover {
-  box-shadow: 0 4px 20px rgba(244, 63, 94, 0.3);
-  transform: translateY(-1px);
+.btn-danger:hover:not(:disabled) {
+  background: #be123c;
 }
 
 .btn-ghost {
   background: #1f2231;
-  color: #a0a8b8;
-  border: 1px solid #282b3a;
-  transition: all 0.2s;
+  color: #c3c9d5;
+  border: 1px solid #3a3f52;
+  transition:
+    background-color 0.15s,
+    color 0.15s,
+    border-color 0.15s;
 }
-.btn-ghost:hover {
-  background: #252838;
+.btn-ghost:hover:not(:disabled) {
+  background: #262a3b;
   color: #f0f2f5;
-  border-color: #343848;
+  border-color: #555c73;
 }
 
 .btn-warning {
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-  color: #fff;
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  box-shadow: 0 2px 12px rgba(245, 158, 11, 0.18);
-  transition: all 0.2s;
+  background: #f59e0b;
+  color: #1a1203;
+  border: 1px solid #fbbf24;
+  transition: background-color 0.15s;
 }
-.btn-warning:hover {
-  box-shadow: 0 4px 20px rgba(245, 158, 11, 0.3);
-  transform: translateY(-1px);
+.btn-warning:hover:not(:disabled) {
+  background: #fbbf24;
 }
