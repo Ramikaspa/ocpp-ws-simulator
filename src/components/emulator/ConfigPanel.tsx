@@ -38,6 +38,11 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { LocalhostGuideDialog } from "@/components/emulator/LocalhostGuideDialog";
 import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useActiveCharger } from "@/hooks/useActiveCharger";
 import { getService, ocppService } from "@/lib/ocppClient";
 import { type ScenarioMacro, useEmulatorStore } from "@/store/emulatorStore";
@@ -149,6 +154,31 @@ function Field({
       </div>
       {children}
     </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   READ-ONLY BADGE
+   ═══════════════════════════════════════════ */
+
+function ReadOnlyBadge({ setMessage }: { setMessage: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Badge
+            variant="outline"
+            className="text-[7px] px-1 py-0 h-3 text-amber-400/70 border-amber-400/15 bg-amber-400/5 shrink-0 font-mono cursor-help"
+          />
+        }
+      >
+        RO
+      </TooltipTrigger>
+      <TooltipContent className="max-w-60 text-[11px] leading-snug">
+        Read-only. Can't be edited here, and a {setMessage} from the CSMS
+        is answered with Rejected.
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -793,12 +823,7 @@ function StationConfigTab() {
                         {v.variable}
                       </span>
                       {v.mutability === "ReadOnly" && (
-                        <Badge
-                          variant="outline"
-                          className="text-[7px] px-1 py-0 h-3 text-amber-400/70 border-amber-400/15 bg-amber-400/5 shrink-0 font-mono"
-                        >
-                          RO
-                        </Badge>
+                        <ReadOnlyBadge setMessage="SetVariables" />
                       )}
                     </div>
                     <Input
@@ -876,12 +901,7 @@ function StationConfigTab() {
                         {k.key}
                       </span>
                       {k.readonly && (
-                        <Badge
-                          variant="outline"
-                          className="text-[7px] px-1 py-0 h-3 text-amber-400/70 border-amber-400/15 bg-amber-400/5 shrink-0 font-mono"
-                        >
-                          RO
-                        </Badge>
+                        <ReadOnlyBadge setMessage="ChangeConfiguration" />
                       )}
                     </div>
                     <Input
