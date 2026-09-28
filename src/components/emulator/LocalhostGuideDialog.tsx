@@ -956,7 +956,7 @@ export function LocalhostGuideDialog({
             <Button
               variant="neutral"
               size="sm"
-              onClick={() => onOpenChange?.(false)}
+              onClick={() => setIsOpen(false)}
             >
               Close
             </Button>

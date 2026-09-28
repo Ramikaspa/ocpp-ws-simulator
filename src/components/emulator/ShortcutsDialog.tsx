@@ -4,16 +4,16 @@ import { Keyboard } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
 } from "@/components/ui/tooltip";
 
 /* ── Shortcut data ─────────────────────────────────────────────────────────── */
