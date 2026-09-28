@@ -1,16 +1,16 @@
 import { nanoid } from "nanoid";
 import {
-	BrowserOCPPClient,
-	type HandlerContext,
-	type CallHandler,
+  BrowserOCPPClient,
+  type HandlerContext,
+  type CallHandler,
 } from "ocpp-ws-io/browser";
 import {
-	type ChargingProfile,
-	type LocalAuthEntry,
-	type ScenarioStep,
-	type StationConfigKey,
-	sessionSocPct,
-	useEmulatorStore,
+  type ChargingProfile,
+  type LocalAuthEntry,
+  type ScenarioStep,
+  type StationConfigKey,
+  sessionSocPct,
+  useEmulatorStore,
 } from "../store/emulatorStore";
 
 type Timer = ReturnType<typeof setInterval>;
@@ -19,3347 +19,3225 @@ type Timer = ReturnType<typeof setInterval>;
 const roundWh = (wh: number) => Math.round(wh * 100) / 100;
 
 type statusType =
-	| "Available"
-	| "Preparing"
-	| "Charging"
-	| "SuspendedEVSE"
-	| "SuspendedEV"
-	| "Finishing"
-	| "Reserved"
-	| "Faulted";
+  | "Available"
+  | "Preparing"
+  | "Charging"
+  | "SuspendedEVSE"
+  | "SuspendedEV"
+  | "Finishing"
+  | "Reserved"
+  | "Faulted";
 
 // ─── Per-Charger Accessors ────────────────────────────────────────────────────
 
 function getSlotState(chargerId: string) {
-	const s = useEmulatorStore.getState();
-	const slot = s.chargers.find((c) => c.id === chargerId);
-	if (!slot) throw new Error(`No charger slot for id: ${chargerId}`);
-	return { slot, runtime: slot.runtime, config: slot.config, store: s };
+  const s = useEmulatorStore.getState();
+  const slot = s.chargers.find((c) => c.id === chargerId);
+  if (!slot) throw new Error(`No charger slot for id: ${chargerId}`);
+  return { slot, runtime: slot.runtime, config: slot.config, store: s };
 }
 
 class OCPPService {
-	private chargerId: string;
-	private client: BrowserOCPPClient | null = null;
-	private heartbeatTimer: Timer | null = null;
-	private meterTimers: Record<number, Timer> = {};
-	private uploadTimer: Timer | null = null;
-	private reservationTimers: Record<number, Timer> = {};
-	private autoChargeTimers: Record<number, Timer> = {};
-	/** Pending steps of the simulated firmware lifecycle. */
-	private firmwareTimers: Timer[] = [];
-	/** Pending reboot steps from a Hard Reset. */
-	private resetTimers: Timer[] = [];
-	private rebooting = false;
-	/** Locally assigned ids for transactions started while offline. */
-	private nextOfflineTransactionId = -1;
-
-	// ─── Transaction session bookkeeping ──────────────────────────────────────
-	// The connector slice in the store is UI state and gets reset on disconnect,
-	// connector reset, profile switches and so on. The CSMS, however, keeps a
-	// transaction open until it sees StopTransaction. These two maps are the
-	// service-owned record of what is actually running, so a RemoteStop can
-	// always be matched back to a connector.
-
-	/** Lifecycle phase per connector. Guards against overlapping starts/stops. */
-	private txPhase: Record<number, "idle" | "starting" | "active" | "stopping"> =
-		{};
-	/** transactionId (stringified) -> connectorId. Survives connector resets. */
-	private txIndex = new Map<string, number>();
-	/** Stop requested while the transaction was still starting. */
-	private deferredStops = new Map<number, string>();
-
-	constructor(chargerId: string) {
-		this.chargerId = chargerId;
-	}
-
-	// ─── Transaction session helpers ──────────────────────────────────────────
-
-	private phaseOf(connectorId: number) {
-		return this.txPhase[connectorId] ?? "idle";
-	}
-
-	/**
-	 * Synchronously claim a connector for a new transaction. Returns false when
-	 * one is already starting, running or stopping there.
-	 *
-	 * This must stay synchronous: it is what makes two RemoteStartTransaction
-	 * requests arriving back to back resolve to a single transaction instead of
-	 * two, only one of which the simulator would remember.
-	 */
-	private claimForStart(connectorId: number): boolean {
-		if (this.phaseOf(connectorId) !== "idle") return false;
-		const conn = useEmulatorStore
-			.getState()
-			.chargers.find((c) => c.id === this.chargerId)?.runtime.connectors[
-			connectorId
-		];
-		if (conn?.inTransaction) return false;
-		this.txPhase[connectorId] = "starting";
-		return true;
-	}
-
-	private releaseConnector(connectorId: number) {
-		this.txPhase[connectorId] = "idle";
-	}
-
-	/** Record a live transaction so RemoteStop can find it later. */
-	private registerTransaction(connectorId: number, transactionId: unknown) {
-		this.txPhase[connectorId] = "active";
-		if (transactionId !== null && transactionId !== undefined) {
-			this.txIndex.set(String(transactionId), connectorId);
-		}
-	}
-
-	private forgetTransaction(connectorId: number, transactionId?: unknown) {
-		this.txPhase[connectorId] = "idle";
-		if (transactionId !== null && transactionId !== undefined) {
-			this.txIndex.delete(String(transactionId));
-			return;
-		}
-		for (const [key, id] of this.txIndex) {
-			if (id === connectorId) this.txIndex.delete(key);
-		}
-	}
-
-	/**
-	 * Map an incoming transactionId to a connector. Compares as strings so a
-	 * CSMS that sends "1234" for a transaction we stored as 1234 still matches,
-	 * and falls back to the store when the service map has been reset.
-	 */
-	private resolveTransaction(transactionId: unknown): number | null {
-		if (transactionId === null || transactionId === undefined) return null;
-		const key = String(transactionId);
-		const known = this.txIndex.get(key);
-		if (known !== undefined) return known;
-
-		const slot = useEmulatorStore
-			.getState()
-			.chargers.find((c) => c.id === this.chargerId);
-		if (!slot) return null;
-		for (const conn of Object.values(slot.runtime.connectors)) {
-			if (
-				conn?.transactionId !== null &&
-				conn?.transactionId !== undefined &&
-				String(conn.transactionId) === key
-			) {
-				return conn.connectorId;
-			}
-		}
-		return null;
-	}
-
-	/**
-	 * Stable 2.x transaction id for an EVSE. Every TransactionEvent in one
-	 * session must carry the same id — generating a fresh one per event (the
-	 * old fallback) makes the CSMS see each event as a separate transaction.
-	 */
-	private transactionIdFor(evseId: number): string {
-		const conn = useEmulatorStore
-			.getState()
-			.chargers.find((c) => c.id === this.chargerId)?.runtime.connectors[
-			evseId
-		];
-		if (conn?.transactionId !== null && conn?.transactionId !== undefined) {
-			return String(conn.transactionId);
-		}
-		for (const [key, id] of this.txIndex) {
-			if (id === evseId) return key;
-		}
-		const generated = `TXN-${nanoid(6)}`;
-		this.txIndex.set(generated, evseId);
-		return generated;
-	}
-
-	/** Connectors this service believes are mid-transaction. */
-	private activeConnectorIds(): number[] {
-		const slot = useEmulatorStore
-			.getState()
-			.chargers.find((c) => c.id === this.chargerId);
-		const fromStore = Object.values(slot?.runtime.connectors ?? {})
-			.filter((c) => c?.inTransaction)
-			.map((c) => c.connectorId);
-		return [...new Set([...fromStore, ...this.txIndex.values()])];
-	}
-
-	/** Always clear before setting — an overwritten interval can never be stopped. */
-	private setMeterTimer(connectorId: number, timer: Timer) {
-		this.clearMeterTimer(connectorId);
-		this.meterTimers[connectorId] = timer;
-	}
-
-	private clearReservationTimer(connectorId: number) {
-		if (this.reservationTimers[connectorId]) {
-			clearTimeout(this.reservationTimers[connectorId]);
-			delete this.reservationTimers[connectorId];
-		}
-	}
-
-	private clearMeterTimer(connectorId: number) {
-		if (this.meterTimers[connectorId]) {
-			clearInterval(this.meterTimers[connectorId]);
-			delete this.meterTimers[connectorId];
-		}
-	}
-
-	// ─── Store helpers ────────────────────────────────────────────────────────
-
-	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: we may need this later
-	private get store() {
-		return useEmulatorStore.getState();
-	}
-
-	// ─── Connection ────────────────────────────────────────────────────────────
-
-	async connect() {
-		const { config, store } = getSlotState(this.chargerId);
-		if (this.client) await this.disconnect();
-
-		store.setStatus(this.chargerId, "connecting");
-
-		try {
-			this.client = new BrowserOCPPClient({
-				endpoint: config.endpoint,
-				identity: config.chargePointId,
-				protocols: [config.ocppVersion],
-				reconnect: true,
-				maxReconnects: 5,
-				logging: false,
-				...(config.securityProfile === 1 && config.basicAuthPassword
-					? { password: config.basicAuthPassword }
-					: {}),
-			});
-
-			this.client.on("open", () => {
-				const s = useEmulatorStore.getState();
-				s.setStatus(this.chargerId, "connected");
-				s.setConnectedAt(this.chargerId, Date.now());
-				s.addLog(this.chargerId, {
-					direction: "System",
-					action: "Connected",
-					payload: {
-						url: config.endpoint,
-						protocol: config.ocppVersion,
-					},
-				});
-				this.sendBootNotification();
-			});
-
-			this.client.on("error", (err: Event | Error) => {
-				const message =
-					err instanceof Error
-						? err.message
-						: "WebSocket error event";
-				const s = useEmulatorStore.getState();
-				s.setStatus(this.chargerId, "faulted");
-				const isHttps =
-					typeof window !== "undefined" && window.location.protocol === "https:";
-				const isLocal =
-					config.endpoint.includes("localhost") ||
-					config.endpoint.includes("127.0.0.1");
-				const payload: Record<string, unknown> = { message };
-				if (isHttps && isLocal) {
-					payload.hint =
-						"Connecting to ws://localhost from HTTPS? Your browser may block insecure WebSockets. Allow 'Insecure content' or 'Local network access' in site settings, or open the Localhost Guide in the header.";
-				}
-				s.addLog(this.chargerId, {
-					direction: "Error",
-					action: "WebSocket Error",
-					payload,
-				});
-			});
-
-			this.client.on(
-				"close",
-				(info: { code: number; reason: string }) => {
-					const s = useEmulatorStore.getState();
-					s.setStatus(this.chargerId, "disconnected");
-					s.setConnectedAt(this.chargerId, null);
-					this.clearAllTimers();
-					s.addLog(this.chargerId, {
-						direction: "System",
-						action: "Disconnected",
-						payload: { code: info.code, reason: info.reason },
-					});
-					// Connectors mid-transaction keep their session: the CSMS
-					// still has that transaction open and will expect to be
-					// able to stop it once we are back. Wiping it here is what
-					// makes a post-reconnect RemoteStop unmatchable.
-					const slot = s.chargers.find(
-						(c) => c.id === this.chargerId,
-					);
-					const n = slot?.config.numberOfConnectors ?? 1;
-					for (let i = 1; i <= n; i++) {
-						if (slot?.runtime.connectors[i]?.inTransaction) continue;
-						s.resetConnector(this.chargerId, i);
-						this.releaseConnector(i);
-					}
-				},
-			);
-
-			this.client.on("connecting", (info: { url: string }) => {
-				useEmulatorStore.getState().addLog(this.chargerId, {
-					direction: "System",
-					action: "Connecting",
-					payload: { url: info.url },
-				});
-			});
-
-			this.client.on(
-				"reconnect",
-				(info: { attempt: number; delay: number }) => {
-					useEmulatorStore.getState().addLog(this.chargerId, {
-						direction: "System",
-						action: "Reconnecting",
-						payload: info,
-					});
-				},
-			);
-
-			this.installResponseDelay();
-			this.registerHandlers();
-			await this.client.connect();
-		} catch (err: unknown) {
-			const msg =
-				err instanceof Error ? err.message : "Failed to create client";
-			useEmulatorStore.getState().setStatus(this.chargerId, "faulted");
-			useEmulatorStore.getState().addLog(this.chargerId, {
-				direction: "Error",
-				action: "Connect Failed",
-				payload: { message: msg },
-			});
-		}
-	}
-
-	/**
-	 * @param internal true when called as part of a simulated reboot, which
-	 * must not cancel the reboot it is a step of.
-	 */
-	async disconnect(internal = false) {
-		if (!internal) this.cancelReboot();
-		try {
-			await this.client?.close({ code: 1000, reason: "User disconnect" });
-		} catch (_) {}
-		this.client = null;
-		this.clearAllTimers();
-		useEmulatorStore.getState().setStatus(this.chargerId, "disconnected");
-	}
-
-	/** Hard Reset: drop the connection, then come back up like a real reboot. */
-	private scheduleReboot() {
-		this.cancelReboot();
-		this.rebooting = true;
-		this.resetTimers.push(
-			setTimeout(async () => {
-				await this.disconnect(true);
-				if (!this.rebooting) return;
-				this.resetTimers.push(
-					setTimeout(() => {
-						this.rebooting = false;
-						this.connect();
-					}, 1500),
-				);
-			}, 300),
-		);
-	}
-
-	/** A manual disconnect cancels a pending reboot instead of racing it. */
-	private cancelReboot() {
-		this.rebooting = false;
-		this.resetTimers.forEach(clearTimeout);
-		this.resetTimers = [];
-	}
-
-	private clearAllTimers() {
-		if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-		Object.values(this.meterTimers).forEach(clearInterval);
-		if (this.uploadTimer) clearInterval(this.uploadTimer);
-		Object.values(this.reservationTimers).forEach(clearTimeout);
-		Object.values(this.autoChargeTimers).forEach(clearInterval);
-		this.firmwareTimers.forEach(clearTimeout);
-		this.firmwareTimers = [];
-		this.heartbeatTimer = null;
-		this.meterTimers = {};
-		this.uploadTimer = null;
-		this.reservationTimers = {};
-		this.autoChargeTimers = {};
-	}
-
-	// ─── Incoming CSMS Handlers ───────────────────────────────────────────────
-
-	/**
-	 * Single exit point for outgoing OCPP calls.
-	 *
-	 * In simulated offline mode nothing reaches the socket: the message is
-	 * appended to the offline queue and answered locally, so the charge point
-	 * keeps charging and metering exactly as a real one does when it loses its
-	 * backend. The queue is replayed in order when the station comes back.
-	 */
-	private async sendCall<T = unknown>(
-		action: string,
-		params: unknown,
-	): Promise<T> {
-		if (!this.client) throw new Error("Not connected");
-		const s = useEmulatorStore.getState();
-		if (s.getSlot(this.chargerId)?.runtime.offlineMode) {
-			s.addToOfflineQueue(this.chargerId, {
-				action,
-				payload: params,
-				timestamp: new Date().toISOString(),
-			});
-			s.addLog(this.chargerId, {
-				direction: "System",
-				action: "OfflineQueued",
-				payload: {
-					queuedAction: action,
-					depth:
-						(s.getSlot(this.chargerId)?.runtime.offlineQueue
-							.length ?? 0) + 1,
-				},
-			});
-			return this.offlineResponse<T>(action);
-		}
-		return (await this.client.call(
-			action,
-			params as Record<string, unknown>,
-		)) as T;
-	}
-
-	/**
-	 * What the charge point assumes while it cannot reach the CSMS. Offline
-	 * transactions get a locally assigned negative id, which is the usual
-	 * convention for "the CSMS has not numbered this yet".
-	 */
-	private offlineResponse<T>(action: string): T {
-		switch (action) {
-			case "Authorize":
-				return {
-					idTagInfo: { status: "Accepted" },
-					idTokenInfo: { status: "Accepted" },
-				} as T;
-			case "StartTransaction":
-				return {
-					transactionId: this.nextOfflineTransactionId--,
-					idTagInfo: { status: "Accepted" },
-				} as T;
-			case "BootNotification":
-				return { status: "Accepted", interval: 300 } as T;
-			default:
-				return {} as T;
-		}
-	}
-
-	/** Replays everything captured while offline, oldest first. */
-	private async flushOfflineQueue() {
-		const s = useEmulatorStore.getState();
-		const queued = s.getSlot(this.chargerId)?.runtime.offlineQueue ?? [];
-		if (queued.length === 0) return;
-		s.clearOfflineQueue(this.chargerId);
-		s.addLog(this.chargerId, {
-			direction: "System",
-			action: "OfflineReplay",
-			payload: { count: queued.length },
-		});
-		for (const entry of queued) {
-			if (!this.client) break;
-			try {
-				await this.client.call(
-					entry.action,
-					entry.payload as Record<string, unknown>,
-				);
-			} catch (err) {
-				useEmulatorStore.getState().addLog(this.chargerId, {
-					direction: "Error",
-					action: "OfflineReplay",
-					payload: {
-						queuedAction: entry.action,
-						message: String(err),
-					},
-				});
-			}
-		}
-	}
-
-	/**
-	 * Toggle simulated offline mode. Going back online replays the queue, so
-	 * the CSMS receives the session it missed.
-	 */
-	async setOfflineMode(offline: boolean) {
-		const s = useEmulatorStore.getState();
-		const current = s.getSlot(this.chargerId)?.runtime.offlineMode ?? false;
-		if (current === offline) return;
-		s.toggleOfflineMode(this.chargerId);
-		s.addLog(this.chargerId, {
-			direction: "System",
-			action: offline ? "WentOffline" : "WentOnline",
-			payload: {},
-		});
-		if (!offline) await this.flushOfflineQueue();
-	}
-
-	/**
-	 * Holds every outgoing response back by the configured delay.
-	 *
-	 * Registered as middleware rather than wrapped around each handler so the
-	 * library keeps applying its per-message request/response types. The charge
-	 * point still acts on the request immediately — only the reply is late,
-	 * which is what a slow station looks like to a CSMS and is how you provoke
-	 * its call timeout.
-	 */
-	private installResponseDelay() {
-		if (!this.client) return;
-		this.client.use(async (ctx, next) => {
-			// The middleware wraps dispatch *and* the reply, so the wait has to
-			// happen before next() — delaying afterwards would run once the
-			// CALLRESULT had already gone out.
-			if (ctx.type === "incoming_call") {
-				const delay =
-					useEmulatorStore
-						.getState()
-						.getSlot(this.chargerId)?.config.simulation
-						.responseDelayMs ?? 0;
-				if (delay > 0) {
-					await new Promise((r) => setTimeout(r, delay));
-				}
-			}
-			return next();
-		});
-	}
-
-	/** Dispatch to the right handler set based on configured OCPP version */
-	private registerHandlers() {
-		if (!this.client) return;
-		const { config } = getSlotState(this.chargerId);
-		if (config.ocppVersion === "ocpp1.6") {
-			this.registerHandlers16();
-		} else {
-			// ocpp2.0.1 and ocpp2.1 share the same handler set
-			this.registerHandlers201();
-		}
-	}
-
-	private registerHandlers16() {
-		if (!this.client) return;
-
-		const cid = this.chargerId;
-
-		// ── Reset ──
-		this.client.handle("Reset", (ctx) => {
-			const payload = ctx.params as { type: string };
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "Reset",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			if (payload.type === "Hard") {
-				this.scheduleReboot();
-			}
-			return { status: "Accepted" };
-		});
-
-		// ── RemoteStartTransaction ──
-		this.client.handle("RemoteStartTransaction", (ctx) => {
-			const payload = ctx.params as {
-				connectorId?: number;
-				idTag: string;
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers.find((c) => c.id === cid);
-			const connId = payload.connectorId ?? 1;
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "RemoteStartTransaction",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			if (!slot?.runtime.connectors[connId])
-				return { status: "Rejected" };
-			// Claim synchronously: a duplicate or retried RemoteStart must not
-			// open a second transaction the simulator would then forget about.
-			if (!this.claimForStart(connId)) return { status: "Rejected" };
-			setTimeout(() => this.startTransaction(connId, payload.idTag), 500);
-			return { status: "Accepted" };
-		});
-
-		// ── RemoteStopTransaction ──
-		this.client.handle("RemoteStopTransaction", (ctx) => {
-			const payload = ctx.params as { transactionId: number };
-			const s = useEmulatorStore.getState();
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "RemoteStopTransaction",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const connId = this.resolveTransaction(payload.transactionId);
-			if (connId === null) return { status: "Rejected" };
-			if (this.phaseOf(connId) === "starting") {
-				// The transaction is mid-start; honour the stop once it lands
-				// rather than dropping it on the floor.
-				this.deferredStops.set(connId, "Remote");
-				return { status: "Accepted" };
-			}
-			setTimeout(() => this.stopTransaction(connId, "Remote"), 500);
-			return { status: "Accepted" };
-		});
-
-		// ── TriggerMessage ──
-		this.client.handle("TriggerMessage", (ctx) => {
-			const payload = ctx.params as {
-				requestedMessage: string;
-				connectorId?: number;
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers.find((c) => c.id === cid);
-			const connId = payload.connectorId ?? 1;
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "TriggerMessage",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const { requestedMessage } = payload;
-			if (
-				requestedMessage === "MeterValues" &&
-				!slot?.runtime.connectors[connId]?.inTransaction
-			)
-				return { status: "Rejected" };
-			setTimeout(() => {
-				if (requestedMessage === "Heartbeat") this.sendHeartbeat();
-				else if (requestedMessage === "BootNotification")
-					this.sendBootNotification();
-				else if (requestedMessage === "StatusNotification") {
-					const st =
-						useEmulatorStore
-							.getState()
-							.chargers.find((c) => c.id === cid)?.runtime
-							.connectors[connId]?.status ?? "Available";
-					this.sendStatusNotification(connId, st);
-				} else if (requestedMessage === "MeterValues")
-					this.sendMeterValues(connId);
-				else if (requestedMessage === "DiagnosticsStatusNotification") {
-					const isUp =
-						useEmulatorStore
-							.getState()
-							.chargers.find((c) => c.id === cid)?.runtime
-							.isUploading ?? false;
-					this.sendDiagnosticsStatus(isUp ? "Uploading" : "Idle");
-				} else if (requestedMessage === "FirmwareStatusNotification") {
-					const fw =
-						useEmulatorStore
-							.getState()
-							.chargers.find((c) => c.id === cid)?.config
-							.simulation.firmwareStatus ?? "Downloaded";
-					this.sendFirmwareStatus(fw);
-				}
-			}, 200);
-			return { status: "Accepted" };
-		});
-
-		// ── GetConfiguration ──
-		this.client.handle("GetConfiguration", (ctx) => {
-			const payload = ctx.params as { key?: string[] };
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "GetConfiguration",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const keys = payload?.key;
-			const configurationKey = keys?.length
-				? slot.config.stationConfig.filter((k: StationConfigKey) =>
-						keys.includes(k.key),
-					)
-				: slot.config.stationConfig;
-			const unknownKey = keys?.length
-				? keys.filter(
-						(k: string) =>
-							!slot.config.stationConfig.find(
-								(sc: StationConfigKey) => sc.key === k,
-							),
-					)
-				: [];
-			return { configurationKey, unknownKey };
-		});
-
-		// ── ChangeConfiguration ──
-		this.client.handle("ChangeConfiguration", (ctx) => {
-			const payload = ctx.params as { key: string; value: string };
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "ChangeConfiguration",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const found = slot.config.stationConfig.find(
-				(k: StationConfigKey) => k.key === payload.key,
-			);
-			if (!found) return { status: "NotSupported" };
-			if (found.readonly) return { status: "Rejected" };
-
-			s.updateStationConfigKey(cid, payload.key, payload.value);
-
-			// Reactivity Engine: Apply changes immediately
-			if (payload.key === "HeartbeatInterval") {
-				const interval = Number(payload.value);
-				if (!Number.isNaN(interval) && interval > 0) {
-					this.startHeartbeatTimer(interval);
-				}
-			}
-			if (payload.key === "MeterValueSampleInterval") {
-				// Re-arm any running meter loop so the new sample rate takes
-				// effect on the current transaction, not just the next one.
-				const interval = Number(payload.value);
-				if (!Number.isNaN(interval) && interval > 0) {
-					for (const connId of this.activeConnectorIds()) {
-						this.startMeterLoop(connId);
-					}
-				}
-			}
-
-			return { status: "Accepted" };
-		});
-
-		// ── GetDiagnostics ──
-		this.client.handle("GetDiagnostics", (ctx) => {
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "GetDiagnostics",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			this.startDiagnosticsUpload();
-			return { fileName: slot.config.simulation.diagnosticFileName };
-		});
-
-		// ── ClearCache ──
-		this.client.handle("ClearCache", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "ClearCache",
-				payload: {},
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── ChangeAvailability ──
-		this.client.handle("ChangeAvailability", (ctx) => {
-			const payload = ctx.params as {
-				connectorId: number;
-				type: "Inoperative" | "Operative";
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "ChangeAvailability",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const newStatus =
-				payload.type === "Inoperative" ? "Unavailable" : "Available";
-			if (payload.connectorId === 0) {
-				for (let i = 1; i <= slot.config.numberOfConnectors; i++) {
-					s.updateConnector(cid, i, {
-						status: newStatus as statusType,
-					});
-					this.sendStatusNotification(i, newStatus);
-				}
-			} else {
-				s.updateConnector(cid, payload.connectorId, {
-					status: newStatus as statusType,
-				});
-				this.sendStatusNotification(payload.connectorId, newStatus);
-			}
-			return { status: "Accepted" };
-		});
-
-		// ── ReserveNow ──
-		this.client.handle("ReserveNow", (ctx) => {
-			const payload = ctx.params as {
-				connectorId: number;
-				expiryDate: string;
-				idTag: string;
-				parentIdTag?: string;
-				reservationId: number;
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "ReserveNow",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const conn = slot.runtime.connectors[payload.connectorId];
-			if (!conn) return { status: "Rejected" };
-			if (conn.inTransaction) return { status: "Occupied" };
-			if (conn.status === "Faulted") return { status: "Faulted" };
-			if (conn.status === "Unavailable") return { status: "Unavailable" };
-			// Already held by a different reservation.
-			if (
-				conn.reservation &&
-				conn.reservation.reservationId !== payload.reservationId
-			)
-				return { status: "Occupied" };
-			// Re-reserving the same connector replaces the pending expiry.
-			this.clearReservationTimer(payload.connectorId);
-			s.updateConnector(cid, payload.connectorId, {
-				status: "Reserved",
-				reservation: {
-					reservationId: payload.reservationId,
-					idTag: payload.idTag,
-					expiryDate: payload.expiryDate,
-					parentIdTag: payload.parentIdTag,
-				},
-			});
-			this.sendStatusNotification(payload.connectorId, "Reserved");
-			const expiryMs =
-				new Date(payload.expiryDate).getTime() - Date.now();
-			if (expiryMs > 0) {
-				this.reservationTimers[payload.connectorId] = setTimeout(() => {
-					const current = useEmulatorStore
-						.getState()
-						.chargers.find((c) => c.id === cid)?.runtime.connectors[
-						payload.connectorId
-					];
-					delete this.reservationTimers[payload.connectorId];
-					if (
-						current?.reservation?.reservationId !==
-						payload.reservationId
-					)
-						return;
-					if (current.inTransaction) {
-						// Charging started under this reservation: drop the
-						// reservation but never announce Available mid-session.
-						useEmulatorStore
-							.getState()
-							.updateConnector(cid, payload.connectorId, {
-								reservation: null,
-							});
-						return;
-					}
-					{
-						useEmulatorStore
-							.getState()
-							.updateConnector(cid, payload.connectorId, {
-								status: "Available",
-								reservation: null,
-							});
-						this.sendStatusNotification(
-							payload.connectorId,
-							"Available",
-						);
-						useEmulatorStore.getState().addLog(cid, {
-							direction: "System",
-							action: "ReservationExpired",
-							payload: {
-								connectorId: payload.connectorId,
-								reservationId: payload.reservationId,
-							},
-						});
-					}
-				}, expiryMs);
-			}
-			return { status: "Accepted" };
-		});
-
-		// ── CancelReservation ──
-		this.client.handle("CancelReservation", (ctx) => {
-			const payload = ctx.params as { reservationId: number };
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) return { status: "Rejected" };
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "CancelReservation",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			for (let i = 1; i <= slot.config.numberOfConnectors; i++) {
-				if (
-					slot.runtime.connectors[i]?.reservation?.reservationId ===
-					payload.reservationId
-				) {
-					s.updateConnector(cid, i, {
-						status: "Available",
-						reservation: null,
-					});
-					this.clearReservationTimer(i);
-					this.sendStatusNotification(i, "Available");
-					return { status: "Accepted" };
-				}
-			}
-			return { status: "Rejected" };
-		});
-
-		// ── SetChargingProfile ──
-		this.client.handle("SetChargingProfile", (ctx) => {
-			const payload = ctx.params as {
-				connectorId: number;
-				csChargingProfiles: ChargingProfile;
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "SetChargingProfile",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const conn = slot.runtime.connectors[payload.connectorId];
-			if (!conn && payload.connectorId !== 0)
-				return { status: "Rejected" };
-			const profile = payload.csChargingProfiles;
-			const targetId =
-				payload.connectorId === 0 ? 1 : payload.connectorId;
-			const existing = (
-				slot.runtime.connectors[targetId]?.chargingProfiles ?? []
-			).filter(
-				(p) =>
-					!(
-						p.chargingProfileId === profile.chargingProfileId &&
-						p.stackLevel === profile.stackLevel
-					),
-			);
-			s.updateConnector(cid, targetId, {
-				chargingProfiles: [...existing, profile],
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── ClearChargingProfile ──
-		this.client.handle("ClearChargingProfile", (ctx) => {
-			const payload = ctx.params as {
-				id?: number;
-				connectorId?: number;
-				chargingProfilePurpose?: string;
-				stackLevel?: number;
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "ClearChargingProfile",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			let found = false;
-			for (let i = 1; i <= slot.config.numberOfConnectors; i++) {
-				// connectorId absent or 0 means "every connector".
-				if (
-					payload.connectorId !== undefined &&
-					payload.connectorId !== i &&
-					payload.connectorId !== 0
-				)
-					continue;
-				const profiles =
-					slot.runtime.connectors[i]?.chargingProfiles ?? [];
-				// A profile is cleared when it matches ALL supplied criteria;
-				// an omitted criterion is a wildcard, so a request carrying no
-				// criteria at all clears every profile on the connector.
-				const filtered = profiles.filter((p) => {
-					const matches =
-						(payload.id === undefined ||
-							p.chargingProfileId === payload.id) &&
-						(!payload.chargingProfilePurpose ||
-							p.chargingProfilePurpose ===
-								payload.chargingProfilePurpose) &&
-						(payload.stackLevel === undefined ||
-							p.stackLevel === payload.stackLevel);
-					return !matches;
-				});
-				if (filtered.length !== profiles.length) {
-					found = true;
-					s.updateConnector(cid, i, { chargingProfiles: filtered });
-				}
-			}
-			return { status: found ? "Accepted" : "Unknown" };
-		});
-
-		// ── GetCompositeSchedule ──
-		this.client.handle("GetCompositeSchedule", (ctx) => {
-			const payload = ctx.params as {
-				connectorId: number;
-				duration: number;
-				chargingRateUnit?: "A" | "W";
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "GetCompositeSchedule",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const conn = slot.runtime.connectors[payload.connectorId];
-			if (!conn || conn.chargingProfiles.length === 0)
-				return { status: "Rejected" };
-			const sorted = [...conn.chargingProfiles].sort(
-				(a, b) => b.stackLevel - a.stackLevel,
-			);
-			const top = sorted[0];
-			return {
-				status: "Accepted",
-				connectorId: payload.connectorId,
-				scheduleStart: new Date().toISOString(),
-				chargingSchedule: top.chargingSchedule,
-			};
-		});
-
-		// ── SendLocalList ──
-		this.client.handle("SendLocalList", (ctx) => {
-			const payload = ctx.params as {
-				listVersion: number;
-				localAuthorizationList?: LocalAuthEntry[];
-				updateType: "Differential" | "Full";
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "NotSupported" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "SendLocalList",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			if (
-				payload.listVersion <= slot.runtime.localAuthListVersion &&
-				payload.updateType === "Differential"
-			) {
-				return { status: "VersionMismatch" };
-			}
-			const newEntries = payload.localAuthorizationList ?? [];
-			if (payload.updateType === "Full") {
-				s.setLocalAuthList(cid, newEntries, payload.listVersion);
-			} else {
-				const merged = [...slot.runtime.localAuthList];
-				newEntries.forEach((entry) => {
-					const idx = merged.findIndex(
-						(e) => e.idTag === entry.idTag,
-					);
-					if (idx >= 0) merged[idx] = entry;
-					else merged.push(entry);
-				});
-				s.setLocalAuthList(cid, merged, payload.listVersion);
-			}
-			return { status: "Accepted" };
-		});
-
-		// ── GetLocalListVersion ──
-		this.client.handle("GetLocalListVersion", (ctx) => {
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "GetLocalListVersion",
-				payload: {},
-				ocppMessageId: ctx.messageId,
-			});
-			return { listVersion: slot.runtime.localAuthListVersion };
-		});
-
-		// ── DataTransfer (CSMS → CP) ──
-		this.client.handle("DataTransfer", (ctx) => {
-			const payload = ctx.params as {
-				vendorId: string;
-				messageId?: string;
-				data?: string;
-			};
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "DataTransfer",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── ExtendedTriggerMessage ──
-		this.client.handle("ExtendedTriggerMessage", (ctx) => {
-			const payload = ctx.params as {
-				requestedMessage: string;
-				connectorId?: number;
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			const connId = payload.connectorId ?? 1;
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "ExtendedTriggerMessage",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			setTimeout(() => {
-				const msg = payload.requestedMessage;
-				if (msg === "BootNotification") this.sendBootNotification();
-				else if (msg === "Heartbeat") this.sendHeartbeat();
-				else if (msg === "StatusNotification") {
-					const st =
-						useEmulatorStore
-							.getState()
-							.chargers.find((c) => c.id === cid)?.runtime
-							.connectors[connId]?.status ?? "Available";
-					this.sendStatusNotification(connId, st);
-				} else if (
-					msg === "MeterValues" &&
-					slot.runtime.connectors[connId]?.inTransaction
-				)
-					this.sendMeterValues(connId);
-				else if (msg === "FirmwareStatusNotification")
-					this.sendFirmwareStatus(
-						slot.config.simulation.firmwareStatus,
-					);
-				else if (msg === "LogStatusNotification")
-					this.sendDiagnosticsStatus(
-						slot.runtime.isUploading ? "Uploading" : "Idle",
-					);
-			}, 200);
-			return { status: "Accepted" };
-		});
-
-		// ── GetLog ──
-		this.client.handle("GetLog", (ctx) => {
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers?.find((c) => c.id === cid);
-			if (!slot) {
-				return { status: "Rejected" };
-			}
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "GetLog",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			this.startDiagnosticsUpload();
-			return {
-				status: "Accepted",
-				filename: slot.config.simulation.diagnosticFileName,
-			};
-		});
-
-		// ── SignedUpdateFirmware ──
-		this.client.handle("SignedUpdateFirmware", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "SignedUpdateFirmware",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			this.runFirmwareSequence([
-				{ status: "Downloading", delay: 0 },
-				{ status: "Downloaded", delay: 3000 },
-				{ status: "Installing", delay: 3000 },
-				{ status: "Installed", delay: 3000 },
-			]);
-			return { status: "Accepted" };
-		});
-
-		// ── InstallCertificate ──
-		this.client.handle("InstallCertificate", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "InstallCertificate",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── DeleteCertificate ──
-		this.client.handle("DeleteCertificate", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "DeleteCertificate",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── GetInstalledCertificateIds ──
-		this.client.handle("GetInstalledCertificateIds", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "GetInstalledCertificateIds",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted", certificateHashData: [] };
-		});
-
-		// ── CertificateSigned ──
-		this.client.handle("CertificateSigned", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "CertificateSigned",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── UnlockConnector ──
-		this.client.handle("UnlockConnector", (ctx) => {
-			const payload = ctx.params as { connectorId: number };
-			const s = useEmulatorStore.getState();
-			const connId = payload.connectorId ?? 1;
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "UnlockConnector",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const slot = s.chargers.find((c) => c.id === cid);
-			const conn = slot?.runtime.connectors[connId];
-			if (!conn) return { status: "NotSupported" };
-
-			// The connector's configured unlockStatus is the simulation lever
-			// for an unlock that fails on real hardware (jammed cable, etc.).
-			if (conn.unlockStatus === "UnlockFailed") {
-				return { status: "UnlockFailed" };
-			}
-
-			// Unlock the cable
-			s.updateConnector(cid, connId, {
-				cableLocked: false,
-				cablePluggedIn: false,
-			});
-
-			if (conn.inTransaction) {
-				// stopTransaction drives Finishing -> StopTransaction ->
-				// Available itself; emitting Available here as well would put
-				// the status sequence out of order on the CSMS.
-				s.updateConnector(cid, connId, {
-					stopReason: "EVDisconnected",
-				});
-				this.stopTransaction(connId, "EVDisconnected");
-			} else {
-				this.sendStatusNotification(connId, "Available");
-			}
-
-			return { status: "Unlocked" };
-		});
-
-		// ── UpdateFirmware ──
-		this.client.handle("UpdateFirmware", (ctx) => {
-			const payload = ctx.params as {
-				location: string;
-				retrieveDate: string;
-				retries?: number;
-				retryInterval?: number;
-			};
-			const s = useEmulatorStore.getState();
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "UpdateFirmware",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			// retrieveDate is when the charge point should START retrieving the
-			// firmware — a CSMS scheduling an update for later expects nothing
-			// to happen until then.
-			const retrieveAt = Date.parse(payload.retrieveDate);
-			const startDelay = Number.isNaN(retrieveAt)
-				? 0
-				: Math.max(0, retrieveAt - Date.now());
-			if (startDelay > 0) {
-				s.addLog(cid, {
-					direction: "System",
-					action: "FirmwareUpdateScheduled",
-					payload: {
-						location: payload.location,
-						retrieveDate: payload.retrieveDate,
-						startsInSeconds: Math.round(startDelay / 1000),
-					},
-				});
-			}
-			this.runFirmwareSequence(
-				[
-					{ status: "Downloading", delay: 2000 },
-					{ status: "Downloaded", delay: 3000 },
-					{ status: "Installing", delay: 3000 },
-					{ status: "Installed", delay: 2000 },
-				],
-				startDelay,
-			);
-			return {};
-		});
-	}
-
-	// ─── OCPP 2.x Incoming Handlers ───────────────────────────────────────────
-
-	private registerHandlers201() {
-		if (!this.client) return;
-		const cid = this.chargerId;
-
-		// ── Reset ──
-		this.client.handle("Reset", (ctx) => {
-			const payload = ctx.params as { type: string };
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "Reset",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			if (payload.type === "Immediate") {
-				setTimeout(() => {
-					this.disconnect();
-					setTimeout(() => this.connect(), 1500);
-				}, 300);
-			}
-			return { status: "Accepted" };
-		});
-
-		// ── ChangeAvailability ──
-		this.client.handle("ChangeAvailability", (ctx) => {
-			const payload = ctx.params as {
-				evseId?: number;
-				operationalStatus: string;
-			};
-			const s = useEmulatorStore.getState();
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "ChangeAvailability",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const evseId = payload.evseId ?? 0;
-			const status =
-				payload.operationalStatus === "Operative"
-					? "Available"
-					: "Unavailable";
-			if (evseId === 0) {
-				// all EVSEs
-				const slot = s.chargers.find((c) => c.id === cid);
-				slot?.runtime.evse.forEach((e) => {
-					s.updateEVSE(cid, e.evseId, { status });
-				});
-			} else {
-				s.updateEVSE(cid, evseId, {
-					status: status as "Available" | "Unavailable",
-				});
-			}
-			return { status: "Accepted" };
-		});
-
-		// ── GetVariables ──
-		this.client.handle("GetVariables", (ctx) => {
-			const payload = ctx.params as {
-				getVariableData: {
-					component: { name: string };
-					variable: { name: string };
-					attributeType?: string;
-				}[];
-			};
-			const s = useEmulatorStore.getState();
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "GetVariables",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const slot = s.chargers.find((c) => c.id === cid);
-			const model = slot?.runtime.deviceModel ?? [];
-			const result = payload.getVariableData.map((req) => {
-				const found = model.find(
-					(v) =>
-						v.component === req.component.name &&
-						v.variable === req.variable.name,
-				);
-				return {
-					component: req.component,
-					variable: req.variable,
-					attributeType: (req.attributeType ?? "Actual") as
-						| "Actual"
-						| "Target"
-						| "MinSet"
-						| "MaxSet",
-					attributeStatus: (found
-						? "Accepted"
-						: "UnknownVariable") as
-						| "Accepted"
-						| "Rejected"
-						| "UnknownComponent"
-						| "UnknownVariable"
-						| "NotSupportedAttributeType",
-					attributeValue: found?.value,
-				};
-			});
-			return { getVariableResult: result };
-		});
-
-		// ── SetVariables ──
-		this.client.handle("SetVariables", (ctx) => {
-			const payload = ctx.params as {
-				setVariableData: {
-					component: { name: string };
-					variable: { name: string };
-					attributeValue: string;
-				}[];
-			};
-			const s = useEmulatorStore.getState();
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "SetVariables",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const slot = s.chargers.find((c) => c.id === cid);
-			const model = slot?.runtime.deviceModel ?? [];
-			const result = payload.setVariableData.map((req) => {
-				const found = model.find(
-					(v) =>
-						v.component === req.component.name &&
-						v.variable === req.variable.name,
-				);
-				if (found?.mutability === "ReadOnly") {
-					return {
-						component: req.component,
-						variable: req.variable,
-						attributeStatus: "Rejected" as
-							| "Accepted"
-							| "Rejected"
-							| "UnknownComponent"
-							| "UnknownVariable"
-							| "NotSupportedAttributeType",
-					};
-				}
-				s.setDeviceVariable(
-					cid,
-					req.component.name,
-					req.variable.name,
-					req.attributeValue,
-				);
-
-				// Reactivity Engine: Apply changes immediately
-				if (
-					req.variable.name === "HeartbeatInterval" ||
-					(req.component.name === "OCPPCommCtrlr" &&
-						req.variable.name === "HeartbeatInterval") ||
-					(req.component.name === "HeartbeatInterval" &&
-						req.variable.name === "Interval")
-				) {
-					const interval = Number(req.attributeValue);
-					if (!Number.isNaN(interval) && interval > 0) {
-						this.startHeartbeatTimer(interval);
-					}
-				}
-
-				return {
-					component: req.component,
-					variable: req.variable,
-					attributeStatus: "Accepted" as
-						| "Accepted"
-						| "Rejected"
-						| "UnknownComponent"
-						| "UnknownVariable"
-						| "NotSupportedAttributeType",
-				};
-			});
-			return { setVariableResult: result };
-		});
-
-		// ── TriggerMessage (2.x) ──
-		this.client.handle("TriggerMessage", (ctx) => {
-			const payload = ctx.params as {
-				requestedMessage: string;
-				evse?: { id: number };
-			};
-			const s = useEmulatorStore.getState();
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "TriggerMessage",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const evseId = payload.evse?.id ?? 1;
-			setTimeout(() => {
-				const msg = payload.requestedMessage;
-				if (msg === "Heartbeat") this.sendHeartbeat();
-				else if (msg === "BootNotification")
-					this.sendBootNotification201();
-				else if (msg === "StatusNotification") {
-					const ev = useEmulatorStore
-						.getState()
-						.chargers.find((c) => c.id === cid)
-						?.runtime.evse.find((e) => e.evseId === evseId);
-					this.sendStatusNotification201(
-						evseId,
-						1,
-						ev?.status ?? "Available",
-					);
-				} else if (msg === "MeterValues") this.sendMeterValues(evseId);
-			}, 300);
-			return { status: "Accepted" };
-		});
-
-		// ── RemoteStartTransaction (2.x → use TransactionEvent) ──
-		// OCPP 2.0.1 renamed these to Request(Start|Stop)Transaction. Register
-		// the spec names, and keep the 1.6 names as aliases so a lenient or
-		// mislabelled CSMS still gets a response instead of NotImplemented.
-		const handleRequestStart: CallHandler = (ctx) => {
-			const payload = ctx.params as unknown as {
-				evseId?: number;
-				idToken: { idToken: string; type: string };
-			};
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers.find((c) => c.id === cid);
-			const evseId = payload.evseId ?? 1;
-			s.addLog(cid, {
-				direction: "Rx",
-				action: ctx.method,
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			if (!slot?.runtime.connectors[evseId])
-				return { status: "Rejected" };
-			if (!this.claimForStart(evseId)) return { status: "Rejected" };
-			setTimeout(
-				() => this.startTransaction201(evseId, payload.idToken.idToken),
-				500,
-			);
-			return { status: "Accepted" };
-		};
-		this.client.handle("RequestStartTransaction", handleRequestStart);
-		this.client.handle("RemoteStartTransaction", handleRequestStart);
-
-		// ── RemoteStopTransaction (2.x) ──
-		const handleRequestStop: CallHandler = (ctx) => {
-			const payload = ctx.params as unknown as { transactionId: string };
-			const s = useEmulatorStore.getState();
-			s.addLog(cid, {
-				direction: "Rx",
-				action: ctx.method,
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const evseId = this.resolveTransaction(payload.transactionId);
-			if (evseId === null) return { status: "Rejected" };
-			if (this.phaseOf(evseId) === "starting") {
-				this.deferredStops.set(evseId, "Remote");
-				return { status: "Accepted" };
-			}
-			setTimeout(() => this.stopTransaction201(evseId, "Remote"), 500);
-			return { status: "Accepted" };
-		};
-		this.client.handle("RequestStopTransaction", handleRequestStop);
-		this.client.handle("RemoteStopTransaction", handleRequestStop);
-
-		// ── ClearCache ──
-		this.client.handle("ClearCache", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "ClearCache",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── SetChargingProfile ──
-		this.client.handle("SetChargingProfile", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "SetChargingProfile",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── ClearChargingProfile ──
-		this.client.handle("ClearChargingProfile", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "ClearChargingProfile",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── GetChargingProfiles ──
-		this.client.handle("GetChargingProfiles", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "GetChargingProfiles",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "NoProfiles" };
-		});
-
-		// ── ReserveNow (2.x evseId-based) ──
-		this.client.handle("ReserveNow", (ctx) => {
-			const payload = ctx.params as {
-				id: number;
-				evseId?: number;
-				idToken: { idToken: string; type: string };
-				expiryDateTime: string;
-			};
-			const s = useEmulatorStore.getState();
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "ReserveNow",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const evseId = payload.evseId ?? 1;
-			s.updateEVSE(cid, evseId, { status: "Reserved" });
-			return { status: "Accepted" };
-		});
-
-		// ── CancelReservation ──
-		this.client.handle("CancelReservation", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "CancelReservation",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── SendLocalList ──
-		this.client.handle("SendLocalList", (ctx) => {
-			const payload = ctx.params as {
-				versionNumber: number;
-				localAuthorizationList?: {
-					idToken: { idToken: string };
-					idTokenInfo?: { status: string };
-				}[];
-				updateType: string;
-			};
-			const s = useEmulatorStore.getState();
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "SendLocalList",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			const list =
-				payload.localAuthorizationList?.map((e) => ({
-					idTag: e.idToken.idToken,
-					idTagInfo: e.idTokenInfo
-						? {
-								status: (e.idTokenInfo.status ??
-									"Accepted") as "Accepted",
-							}
-						: undefined,
-				})) ?? [];
-			s.setLocalAuthList(cid, list, payload.versionNumber);
-			return { status: "Accepted" };
-		});
-
-		// ── GetLocalListVersion ──
-		this.client.handle("GetLocalListVersion", (ctx) => {
-			const s = useEmulatorStore.getState();
-			const slot = s.chargers.find((c) => c.id === cid);
-			s.addLog(cid, {
-				direction: "Rx",
-				action: "GetLocalListVersion",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { versionNumber: slot?.runtime.localAuthListVersion ?? 0 };
-		});
-
-		// ── UnlockConnector ──
-		this.client.handle("UnlockConnector", (ctx) => {
-			const payload = ctx.params as {
-				evseId: number;
-				connectorId: number;
-			};
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "UnlockConnector",
-				payload,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Unlocked" };
-		});
-
-		// ── DataTransfer ──
-		this.client.handle("DataTransfer", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "DataTransfer",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── GetLog ──
-		this.client.handle("GetLog", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "GetLog",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted", filename: "emulator-log.txt" };
-		});
-
-		// ── InstallCertificate (simulated) ──
-		this.client.handle("InstallCertificate", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "InstallCertificate",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── DeleteCertificate (simulated) ──
-		this.client.handle("DeleteCertificate", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "DeleteCertificate",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── GetInstalledCertificateIds (simulated) ──
-		this.client.handle("GetInstalledCertificateIds", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "GetInstalledCertificateIds",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted", certificateHashDataChain: [] };
-		});
-
-		// ── CertificateSigned (simulated) ──
-		this.client.handle("CertificateSigned", (ctx) => {
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "CertificateSigned",
-				payload: ctx.params,
-				ocppMessageId: ctx.messageId,
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── CostUpdated ──
-		this.client.handle("CostUpdated", (ctx) => {
-			const params = ctx.params as { totalCost: number };
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "CostUpdated",
-				payload: params,
-				ocppMessageId: ctx.messageId,
-			});
-			useEmulatorStore.getState().setCostInfo(cid, {
-				totalCost: params.totalCost,
-				currency: "USD",
-				message: "Session cost updated",
-			});
-			return {};
-		});
-
-		// ── DisplayMessage ──
-		this.client.handle("DisplayMessage", (ctx) => {
-			const params = ctx.params as {
-				id?: number;
-				priority?: string;
-				message?: { content?: string };
-			};
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "DisplayMessage",
-				payload: params,
-				ocppMessageId: ctx.messageId,
-			});
-			useEmulatorStore.getState().addDisplayMessage(cid, {
-				id: params.id || Date.now(),
-				priority: params.priority || "Normal",
-				message:
-					params.message?.content || JSON.stringify(params.message),
-				timestamp: Date.now(),
-			});
-			return { status: "Accepted" };
-		});
-
-		// ── ClearDisplayMessage ──
-		this.client.handle("ClearDisplayMessage", (ctx) => {
-			const params = ctx.params as { id: number };
-			useEmulatorStore.getState().addLog(cid, {
-				direction: "Rx",
-				action: "ClearDisplayMessage",
-				payload: params,
-				ocppMessageId: ctx.messageId,
-			});
-			useEmulatorStore.getState().clearDisplayMessage(cid, params.id);
-			return { status: "Accepted" };
-		});
-	}
-
-	// ─── OCPP 2.x Outgoing Methods ────────────────────────────────────────────
-
-	async sendBootNotification201() {
-		if (!this.client) return;
-		const { slot, store } = getSlotState(this.chargerId);
-		const boot = slot.config.bootNotification;
-		const payload = {
-			reason: "PowerUp",
-			chargingStation: {
-				model: boot.chargePointModel,
-				vendorName: boot.chargePointVendor,
-				serialNumber: boot.chargePointSerialNumber || undefined,
-				firmwareVersion: boot.firmwareVersion || undefined,
-				modem:
-					boot.iccid || boot.imsi
-						? {
-								iccid: boot.iccid || undefined,
-								imsi: boot.imsi || undefined,
-							}
-						: undefined,
-			},
-		};
-
-		try {
-			if (slot.config.vendorConfig?.customDataStr) {
-				const parsed = JSON.parse(
-					slot.config.vendorConfig.customDataStr,
-				);
-				if (Object.keys(parsed).length > 0) {
-					(payload as any).customData = {
-						vendorId: slot.config.vendorConfig.vendorId,
-						...parsed,
-					};
-				}
-			}
-		} catch (_) {}
-		const msgId = nanoid(8);
-		store.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "BootNotification",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = (await this.sendCall(
-				"BootNotification",
-				payload,
-			)) as {
-				status: string;
-				currentTime: string;
-				interval?: number;
-			};
-			store.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "BootNotificationConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-			if (res.status === "Accepted") {
-				const interval = res.interval ?? 300;
-				store.setDeviceVariable(
-					this.chargerId,
-					"HeartbeatInterval",
-					"Interval",
-					String(interval),
-				);
-				this.startHeartbeatTimer(interval);
-				// Send StatusNotification for each EVSE
-				const evse =
-					useEmulatorStore
-						.getState()
-						.chargers.find((c) => c.id === this.chargerId)?.runtime
-						.evse ?? [];
-				for (const e of evse) {
-					for (const conn of e.connectors) {
-						this.sendStatusNotification201(
-							e.evseId,
-							conn.connectorId,
-							e.status,
-						);
-					}
-				}
-			}
-		} catch (err) {
-			store.addLog(this.chargerId, {
-				direction: "Error",
-				action: "BootNotification",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-		}
-	}
-
-	async sendTransactionEvent(
-		trigger: "Started" | "Updated" | "Ended",
-		evseId: number,
-		reason?: string,
-		meterValue?: number,
-	) {
-		if (!this.client) return;
-		const { slot, store } = getSlotState(this.chargerId);
-		const connector = slot.runtime.connectors[evseId];
-		const seq = store.bumpTransactionSeq(this.chargerId);
-		const ts = new Date().toISOString();
-		const payload: Record<string, unknown> = {
-			eventType: trigger,
-			seqNo: seq,
-			timestamp: ts,
-			triggerReason:
-				reason ??
-				(trigger === "Started"
-					? "Authorized"
-					: trigger === "Ended"
-						? "Local"
-						: "ChargingRateChanged"),
-			transactionInfo: {
-				transactionId: this.transactionIdFor(evseId),
-				chargingState:
-					trigger === "Ended"
-						? "SuspendedEVSE"
-						: trigger === "Started"
-							? "Charging"
-							: "Charging",
-			},
-			evse: { id: evseId, connectorId: 1 },
-			idToken: connector?.idTag
-				? { idToken: connector.idTag, type: "ISO14443" }
-				: undefined,
-		};
-		if (meterValue !== undefined) {
-			payload.meterValue = [
-				{
-					timestamp: ts,
-					sampledValue: [
-						{
-							value: meterValue,
-							measurand: "Energy.Active.Import.Register",
-							unitOfMeasure: { unit: "Wh" },
-						},
-					],
-				},
-			];
-		}
-		const msgId = nanoid(8);
-		store.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "TransactionEvent",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = await this.sendCall("TransactionEvent", payload);
-			store.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "TransactionEventConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-		} catch (err) {
-			store.addLog(this.chargerId, {
-				direction: "Error",
-				action: "TransactionEvent",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-		}
-	}
-
-	async sendStatusNotification201(
-		evseId: number,
-		connectorId: number,
-		status: string,
-	) {
-		if (!this.client) return;
-		const { store } = getSlotState(this.chargerId);
-		const payload = {
-			timestamp: new Date().toISOString(),
-			connectorStatus: status,
-			evseId,
-			connectorId,
-		};
-
-		const { vendorConfig } = store.getSlot(this.chargerId)?.config ?? {};
-		if (vendorConfig?.vendorErrorCode) {
-			(payload as any).vendorErrorCode = vendorConfig.vendorErrorCode;
-		}
-		const msgId = nanoid(8);
-		store.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "StatusNotification",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			await this.sendCall("StatusNotification", payload);
-		} catch (err) {
-			store.addLog(this.chargerId, {
-				direction: "Error",
-				action: "StatusNotification",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-		}
-	}
-
-	async sendAuthorize201(idToken: string, type = "ISO14443") {
-		if (!this.client) return;
-		const { store } = getSlotState(this.chargerId);
-		const payload = { idToken: { idToken, type } };
-		const msgId = nanoid(8);
-		store.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "Authorize",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = await this.sendCall("Authorize", payload);
-			store.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "AuthorizeConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-			return res;
-		} catch (err) {
-			store.addLog(this.chargerId, {
-				direction: "Error",
-				action: "Authorize",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-			return { idTokenInfo: { status: "Invalid" } };
-		}
-	}
-
-	async startTransaction201(evseId: number, idTag: string) {
-		if (!this.client) return;
-		const { store } = getSlotState(this.chargerId);
-		const preClaimed = this.phaseOf(evseId) === "starting";
-		if (!preClaimed && !this.claimForStart(evseId)) {
-			store.addLog(this.chargerId, {
-				direction: "System",
-				action: "StartTransactionSkipped",
-				payload: {
-					evseId,
-					message: `EVSE busy (${this.phaseOf(evseId)})`,
-				},
-			});
-			return;
-		}
-		const txId = Date.now();
-		store.updateConnector(this.chargerId, evseId, {
-			inTransaction: true,
-			transactionId: txId,
-			idTag,
-			startMeterValue:
-				store.getSlot(this.chargerId)?.runtime.connectors[evseId]
-					?.currentMeterValue ?? 0,
-		});
-		this.registerTransaction(evseId, txId);
-		store.updateEVSE(this.chargerId, evseId, { status: "Occupied" });
-		this.sendStatusNotification201(evseId, 1, "Occupied");
-		await this.sendTransactionEvent("Started", evseId, "Authorized");
-		this.startMeterLoop(evseId);
-		const deferred = this.deferredStops.get(evseId);
-		if (deferred) {
-			this.deferredStops.delete(evseId);
-			await this.stopTransaction201(evseId, deferred);
-		}
-	}
-
-	async stopTransaction201(evseId: number, reason = "Local") {
-		if (!this.client) return;
-		const { store } = getSlotState(this.chargerId);
-		const snap = store.getSlot(this.chargerId)?.runtime.connectors[evseId];
-		if (!snap?.inTransaction) {
-			if (this.phaseOf(evseId) === "starting") {
-				this.deferredStops.set(evseId, reason);
-				return;
-			}
-			this.clearMeterTimer(evseId);
-			this.forgetTransaction(evseId);
-			return;
-		}
-		if (this.phaseOf(evseId) === "stopping") return;
-		this.txPhase[evseId] = "stopping";
-		// Stop metering before the closing event so the final meter value is
-		// the one reported in TransactionEvent(Ended).
-		this.clearMeterTimer(evseId);
-		const transactionId = snap.transactionId;
-		await this.sendTransactionEvent(
-			"Ended",
-			evseId,
-			reason,
-			roundWh(snap.currentMeterValue),
-		);
-		store.updateConnector(this.chargerId, evseId, {
-			inTransaction: false,
-			transactionId: null,
-			startMeterValue: snap.currentMeterValue,
-		});
-		this.forgetTransaction(evseId, transactionId);
-		store.updateEVSE(this.chargerId, evseId, { status: "Available" });
-		this.sendStatusNotification201(evseId, 1, "Available");
-	}
-
-	// ─── Outgoing Commands ─────────────────────────────────────────────────────
-
-	async sendBootNotification() {
-		if (!this.client) return;
-		const { slot, store } = getSlotState(this.chargerId);
-		const payload = { ...slot.config.bootNotification };
-		const msgId = nanoid(8);
-		store.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "BootNotification",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = (await this.sendCall(
-				"BootNotification",
-				payload,
-			)) as {
-				status: string;
-				interval?: number;
-			};
-			store.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "BootNotificationConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-			if (res.status === "Accepted") {
-				const interval = res.interval ?? 300;
-				store.updateStationConfigKey(
-					this.chargerId,
-					"HeartbeatInterval",
-					String(interval),
-				);
-				this.startHeartbeatTimer(interval);
-				const n =
-					useEmulatorStore
-						.getState()
-						.chargers.find((c) => c.id === this.chargerId)?.config
-						.numberOfConnectors ?? 1;
-				this.flushOfflineQueue();
-				const resumed = new Set(this.activeConnectorIds());
-				for (let i = 1; i <= n; i++)
-					if (!resumed.has(i)) this.sendStatusNotification(i, "Available");
-				this.resumeActiveTransactions();
-			}
-		} catch (err) {
-			store.addLog(this.chargerId, {
-				direction: "Error",
-				action: "BootNotification",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-		}
-	}
-
-	/**
-	 * Re-announce and re-arm any transaction that was running before the socket
-	 * dropped. A charge point that reconnects mid-session is still charging, so
-	 * the CSMS must see Charging again and keep receiving meter values — and a
-	 * RemoteStop for that transaction has to keep working.
-	 */
-	private resumeActiveTransactions() {
-		const slot = useEmulatorStore
-			.getState()
-			.chargers.find((c) => c.id === this.chargerId);
-		if (!slot) return;
-		for (const conn of Object.values(slot.runtime.connectors)) {
-			if (!conn?.inTransaction) continue;
-			this.registerTransaction(conn.connectorId, conn.transactionId);
-			useEmulatorStore.getState().addLog(this.chargerId, {
-				direction: "System",
-				action: "TransactionResumed",
-				payload: {
-					connectorId: conn.connectorId,
-					transactionId: conn.transactionId,
-					meterValue: conn.currentMeterValue,
-				},
-			});
-			this.sendStatusNotification(conn.connectorId, "Charging");
-			this.startMeterLoop(conn.connectorId);
-		}
-	}
-
-	private startHeartbeatTimer(intervalSeconds: number) {
-		if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-		this.heartbeatTimer = setInterval(
-			() => this.sendHeartbeat(),
-			intervalSeconds * 1000,
-		);
-	}
-
-	async sendHeartbeat() {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		const msgId = nanoid(8);
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "Heartbeat",
-			payload: {},
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = await this.sendCall("Heartbeat", {});
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "HeartbeatConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action: "Heartbeat",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-		}
-	}
-
-	/**
-	 * OCPP 1.6 connector status -> 2.0.1 ConnectorStatusEnumType, which only
-	 * has Available | Occupied | Reserved | Unavailable | Faulted.
-	 */
-	private static readonly STATUS_16_TO_201: Record<string, string> = {
-		Available: "Available",
-		Preparing: "Occupied",
-		Charging: "Occupied",
-		SuspendedEV: "Occupied",
-		SuspendedEVSE: "Occupied",
-		Finishing: "Occupied",
-		Reserved: "Reserved",
-		Unavailable: "Unavailable",
-		Faulted: "Faulted",
-	};
-
-	async sendStatusNotification(
-		connectorId: number,
-		status: string,
-		errorCode: string = "NoError",
-	) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-
-		// Callers (UI buttons, scenario steps) should not have to know which
-		// protocol version is configured. On 2.x the payload shape differs
-		// entirely, and sending the 1.6 shape gets rejected by a validating
-		// CSMS — which looks like "the status notification never fired".
-		const version = s.getSlot(this.chargerId)?.config.ocppVersion;
-		if (version && version !== "ocpp1.6") {
-			s.updateConnector(this.chargerId, connectorId, {
-				status: status as statusType,
-			});
-			await this.sendStatusNotification201(
-				connectorId,
-				1,
-				OCPPService.STATUS_16_TO_201[status] ?? "Available",
-			);
-			return;
-		}
-		const vendorError = s.getSlot(this.chargerId)?.config.vendorConfig
-			?.vendorErrorCode;
-
-		const payload = {
-			connectorId,
-			errorCode: vendorError || errorCode,
-			status,
-			timestamp: new Date().toISOString(),
-		};
-		const msgId = nanoid(8);
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "StatusNotification",
-			payload,
-			ocppMessageId: msgId,
-		});
-		s.updateConnector(this.chargerId, connectorId, {
-			status: status as statusType,
-		});
-		try {
-			const res = await this.sendCall("StatusNotification", payload);
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "StatusNotificationConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action: "StatusNotification",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-		}
-	}
-
-	async authorize(_connectorId: number, idTag: string): Promise<boolean> {
-		if (!this.client) return false;
-		const s = useEmulatorStore.getState();
-		const msgId = nanoid(8);
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "Authorize",
-			payload: { idTag },
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = (await this.sendCall("Authorize", { idTag })) as {
-				idTagInfo: { status: string };
-			};
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "AuthorizeConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-			return res?.idTagInfo?.status === "Accepted";
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action: "Authorize",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-			return false;
-		}
-	}
-
-	async startTransaction(connectorId: number, idTag?: string) {
-		if (!this.client) {
-			// Claimed by RemoteStartTransaction, then the socket went away
-			// before the delayed start fired — do not strand the connector.
-			this.releaseConnector(connectorId);
-			this.deferredStops.delete(connectorId);
-			return;
-		}
-		const { slot, store } = getSlotState(this.chargerId);
-		const connector = slot.runtime.connectors[connectorId];
-		if (!connector) return;
-		// Direct callers (UI button, scenario runner) have not claimed the
-		// connector yet; RemoteStartTransaction has. Either way exactly one
-		// start may be in flight per connector.
-		const preClaimed = this.phaseOf(connectorId) === "starting";
-		if (!preClaimed && !this.claimForStart(connectorId)) {
-			store.addLog(this.chargerId, {
-				direction: "System",
-				action: "StartTransactionSkipped",
-				payload: {
-					connectorId,
-					message: `Connector busy (${this.phaseOf(connectorId)})`,
-				},
-			});
-			return;
-		}
-		const tag = idTag ?? connector.idTag;
-		const authorized = await this.authorize(connectorId, tag);
-		if (!authorized) {
-			store.addLog(this.chargerId, {
-				direction: "System",
-				action: "AuthFailed",
-				payload: { message: "Authorization rejected" },
-				ocppMessageId: nanoid(8),
-			});
-			this.releaseConnector(connectorId);
-			this.deferredStops.delete(connectorId);
-			await this.sendStatusNotification(connectorId, "Available");
-			return;
-		}
-		await this.sendStatusNotification(connectorId, "Preparing");
-		const freshSlot = useEmulatorStore
-			.getState()
-			?.chargers.find((c) => c.id === this.chargerId);
-		if (!freshSlot) {
-			this.releaseConnector(connectorId);
-			return;
-		}
-		const payload = {
-			connectorId,
-			idTag: tag,
-			// The register as it stands now: it carries over from the last
-			// session, and a value set by hand while idle must be honoured.
-			meterStart: Math.round(
-				freshSlot.runtime.connectors[connectorId].currentMeterValue,
-			),
-			timestamp: new Date().toISOString(),
-		};
-		const txMsgId = nanoid(8);
-		store.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "StartTransaction",
-			payload,
-			ocppMessageId: txMsgId,
-		});
-		try {
-			const res = (await this.sendCall(
-				"StartTransaction",
-				payload,
-			)) as {
-				idTagInfo: { status: string };
-				transactionId: number;
-			};
-			store.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "StartTransactionConf",
-				payload: res,
-				ocppMessageId: txMsgId,
-			});
-			if (res?.idTagInfo?.status === "Accepted") {
-				store.updateConnector(this.chargerId, connectorId, {
-					inTransaction: true,
-					transactionId: res.transactionId,
-					idTag: tag,
-					startMeterValue: payload.meterStart,
-					// Charging consumes any reservation held on this connector.
-					reservation: null,
-				});
-				this.clearReservationTimer(connectorId);
-				this.registerTransaction(connectorId, res.transactionId);
-				await this.sendStatusNotification(connectorId, "Charging");
-				this.startMeterLoop(connectorId);
-				// A RemoteStop that arrived while we were still starting.
-				const deferred = this.deferredStops.get(connectorId);
-				if (deferred) {
-					this.deferredStops.delete(connectorId);
-					await this.stopTransaction(connectorId, deferred);
-				}
-			} else {
-				this.releaseConnector(connectorId);
-				this.deferredStops.delete(connectorId);
-				await this.sendStatusNotification(connectorId, "Available");
-			}
-		} catch (err) {
-			store.addLog(this.chargerId, {
-				direction: "Error",
-				action: "StartTransaction",
-				payload: { message: String(err) },
-				ocppMessageId: txMsgId,
-			});
-			// The call never completed, so no transaction exists on either
-			// side. Free the connector instead of wedging it in "Preparing".
-			this.releaseConnector(connectorId);
-			this.deferredStops.delete(connectorId);
-			await this.sendStatusNotification(connectorId, "Available");
-		}
-	}
-
-	/**
-	 * Drives the periodic meter tick + MeterValues for an active transaction.
-	 * Safe to call on resume: any previous interval is cleared first.
-	 */
-	private startMeterLoop(connectorId: number) {
-		const cfgSlot = useEmulatorStore
-			.getState()
-			?.chargers.find((c) => c.id === this.chargerId);
-		if (!cfgSlot) return;
-		const meterInterval = Math.max(
-			1,
-			parseInt(
-				cfgSlot.config.stationConfig.find(
-					(k: StationConfigKey) =>
-						k.key === "MeterValueSampleInterval",
-				)?.value ?? "60",
-				10,
-			) || 60,
-		);
-		const increment =
-			cfgSlot.config.simulation.autoChargeMeterIncrement /
-			Math.max(1, meterInterval / 10);
-
-		this.setMeterTimer(
-			connectorId,
-			setInterval(() => {
-				const s = useEmulatorStore.getState();
-				const current = s.chargers.find((c) => c.id === this.chargerId)
-					?.runtime.connectors[connectorId];
-				// The transaction ended by some other path — stop ticking.
-				if (!current?.inTransaction) {
-					this.clearMeterTimer(connectorId);
-					return;
-				}
-				// Auto-charge advances the meter on its own tick; adding here as
-				// well would count the same energy twice.
-				if (!this.autoChargeTimers[connectorId]) {
-					s.updateConnector(this.chargerId, connectorId, {
-						currentMeterValue: roundWh(current.currentMeterValue + increment),
-					});
-				}
-				this.sendMeterValues(connectorId);
-			}, meterInterval * 1000),
-		);
-	}
-
-	async sendMeterValues(connectorId: number) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		const slot = s.chargers?.find((c) => c.id === this.chargerId);
-		if (!slot) return;
-		const connector = slot.runtime.connectors[connectorId];
-		if (!connector?.inTransaction) return;
-
-		const m = slot.config.simulation.measurands;
-		const meterWh = roundWh(connector.currentMeterValue);
-		const socPct = sessionSocPct(connector, slot.config.simulation);
-		const powerW = 3000 + Math.floor(Math.random() * 2000);
-		const voltV = 228 + Math.round(Math.random() * 4);
-		const ampA = +(powerW / voltV).toFixed(1);
-		const phases = m.threePhase ? ["L1", "L2", "L3"] : ["L1"];
-
-		const sampledValues: Record<string, unknown>[] = [];
-
-		if (m.energy)
-			sampledValues.push({
-				measurand: "Energy.Active.Import.Register",
-				value: String(meterWh),
-				unit: "Wh",
-			});
-
-		if (m.power)
-			sampledValues.push({
-				measurand: "Power.Active.Import",
-				value: String(powerW),
-				unit: "W",
-			});
-
-		if (m.voltage)
-			phases.forEach((phase) => {
-				sampledValues.push({
-					measurand: "Voltage",
-					phase,
-					value: String(voltV),
-					unit: "V",
-				});
-			});
-
-		if (m.current)
-			phases.forEach((phase) => {
-				sampledValues.push({
-					measurand: "Current.Import",
-					phase,
-					value: String(ampA),
-					unit: "A",
-				});
-			});
-
-		if (m.soc)
-			sampledValues.push({
-				measurand: "SoC",
-				value: socPct.toFixed(1),
-				unit: "Percent",
-				location: "EV",
-			});
-
-		if (m.temperature)
-			sampledValues.push({
-				measurand: "Temperature",
-				value: String(25 + Math.floor(Math.random() * 10)),
-				unit: "Celsius",
-				location: "Body",
-			});
-
-		if (m.frequency)
-			sampledValues.push({
-				measurand: "Frequency",
-				value: String((50 + (Math.random() - 0.5) * 0.2).toFixed(2)),
-				unit: "Hz",
-			});
-
-		const payload = {
-			connectorId,
-			transactionId: connector.transactionId,
-			meterValue: [
-				{
-					timestamp: new Date().toISOString(),
-					sampledValue: sampledValues,
-				},
-			],
-		};
-
-		const msgId = nanoid(8);
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "MeterValues",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = await this.sendCall("MeterValues", payload);
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "MeterValuesConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action: "MeterValues",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-		}
-	}
-
-	async stopTransaction(connectorId: number, reason?: string) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		const slot = s.chargers?.find((c) => c.id === this.chargerId);
-		if (!slot) return;
-		const connector = slot.runtime.connectors[connectorId];
-		if (!connector?.inTransaction) {
-			if (this.phaseOf(connectorId) === "starting") {
-				// A start is in flight. Queue the stop so the transaction is
-				// closed as soon as it exists instead of being orphaned.
-				this.deferredStops.set(connectorId, reason ?? "Local");
-				return;
-			}
-			// Nothing to stop; make sure no stale bookkeeping survives.
-			this.clearMeterTimer(connectorId);
-			this.forgetTransaction(connectorId);
-			return;
-		}
-		if (this.phaseOf(connectorId) === "stopping") return;
-		this.txPhase[connectorId] = "stopping";
-		this.clearMeterTimer(connectorId);
-		await this.sendStatusNotification(connectorId, "Finishing");
-
-		// Read the meter back after the status round-trip so the final value is
-		// the one the connector actually holds, not a pre-await snapshot.
-		const fresh =
-			useEmulatorStore
-				.getState()
-				.chargers.find((c) => c.id === this.chargerId)?.runtime
-				.connectors[connectorId] ?? connector;
-		const transactionId = fresh.transactionId ?? connector.transactionId;
-		const meterStop = Math.round(fresh.currentMeterValue);
-		const payload = {
-			transactionId,
-			idTag: fresh.idTag,
-			meterStop,
-			timestamp: new Date().toISOString(),
-			reason: reason ?? fresh.stopReason,
-		};
-		const msgId = nanoid(8);
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "StopTransaction",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = await this.sendCall("StopTransaction", payload);
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "StopTransactionConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-			useEmulatorStore
-				.getState()
-				.updateConnector(this.chargerId, connectorId, {
-					inTransaction: false,
-					transactionId: null,
-					startMeterValue: fresh.currentMeterValue,
-					stopReason: (reason ??
-						fresh.stopReason) as typeof fresh.stopReason,
-				});
-			this.forgetTransaction(connectorId, transactionId);
-			await this.sendStatusNotification(connectorId, "Available");
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action: "StopTransaction",
-				payload: { message: String(err) },
-				ocppMessageId: msgId,
-			});
-			// The CSMS never acknowledged the stop, so the transaction is still
-			// open on its side. Keep ours open too and go back to "active" so a
-			// retry can go through instead of leaving a connector that reports
-			// charging but can never be stopped.
-			this.txPhase[connectorId] = "active";
-			await this.sendStatusNotification(connectorId, "Charging");
-		}
-	}
-
-	async sendDiagnosticsStatus(status: string) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		const payload = { status };
-		const msgId = nanoid(8);
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "DiagnosticsStatusNotification",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = await this.sendCall(
-				"DiagnosticsStatusNotification",
-				payload,
-			);
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "DiagnosticsStatusNotificationConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-		} catch (_) {}
-	}
-
-	/**
-	 * Runs the simulated firmware lifecycle.
-	 *
-	 * Steps are tracked so the sequence can be cancelled: a disconnect clears
-	 * them (otherwise stale steps surface on the next session), and a second
-	 * UpdateFirmware replaces the first instead of interleaving with it.
-	 */
-	private runFirmwareSequence(
-		steps: { status: string; delay: number }[],
-		startDelayMs = 0,
-	) {
-		this.cancelFirmwareSequence();
-		let cumulative = startDelayMs;
-		for (const step of steps) {
-			cumulative += step.delay;
-			this.firmwareTimers.push(
-				setTimeout(async () => {
-					useEmulatorStore
-						.getState()
-						.updateSimulation(this.chargerId, {
-							firmwareStatus: step.status,
-						});
-					// A station cannot charge through an install: it ends any
-					// running session and reports itself Unavailable until the
-					// new firmware is in place.
-					if (step.status === "Installing")
-						await this.enterFirmwareInstall();
-					await this.sendFirmwareStatus(step.status);
-					if (step.status === "Installed")
-						await this.exitFirmwareInstall();
-				}, cumulative),
-			);
-		}
-	}
-
-	private connectorCount() {
-		return (
-			useEmulatorStore.getState().getSlot(this.chargerId)?.config
-				.numberOfConnectors ?? 1
-		);
-	}
-
-	private async enterFirmwareInstall() {
-		for (const connId of this.activeConnectorIds()) {
-			useEmulatorStore
-				.getState()
-				.updateConnector(this.chargerId, connId, {
-					stopReason: "Other",
-				});
-			await this.stopTransaction(connId, "Other");
-		}
-		for (let i = 1; i <= this.connectorCount(); i++) {
-			await this.sendStatusNotification(i, "Unavailable");
-		}
-	}
-
-	private async exitFirmwareInstall() {
-		for (let i = 1; i <= this.connectorCount(); i++) {
-			await this.sendStatusNotification(i, "Available");
-		}
-	}
-
-	private cancelFirmwareSequence() {
-		this.firmwareTimers.forEach(clearTimeout);
-		this.firmwareTimers = [];
-	}
-
-	async sendFirmwareStatus(status: string) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		const payload = { status };
-		const msgId = nanoid(8);
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "FirmwareStatusNotification",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = await this.sendCall(
-				"FirmwareStatusNotification",
-				payload,
-			);
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "FirmwareStatusNotificationConf",
-				payload: res,
-				ocppMessageId: msgId,
-			});
-		} catch (_) {}
-	}
-
-	startDiagnosticsUpload() {
-		const s = useEmulatorStore.getState();
-		const slot = s.chargers?.find((c) => c.id === this.chargerId);
-		if (!slot) return;
-		if (this.uploadTimer) clearInterval(this.uploadTimer);
-		let secs = slot.config.simulation.diagnosticUploadTime;
-		s.setIsUploading(this.chargerId, true);
-		s.setUploadSecondsLeft(this.chargerId, secs);
-		this.sendDiagnosticsStatus("Uploading");
-		this.uploadTimer = setInterval(() => {
-			secs -= 1;
-			useEmulatorStore
-				.getState()
-				.setUploadSecondsLeft(this.chargerId, secs);
-			if (secs <= 0) {
-				if (this.uploadTimer) clearInterval(this.uploadTimer);
-				this.uploadTimer = null;
-				useEmulatorStore
-					.getState()
-					.setIsUploading(this.chargerId, false);
-				const diagStatus = useEmulatorStore
-					.getState()
-					.chargers.find((c) => c.id === this.chargerId)?.config
-					.simulation.diagnosticStatus;
-				this.sendDiagnosticsStatus(diagStatus ?? "Uploaded");
-			}
-		}, 1000);
-	}
-
-	// ─── DataTransfer (CP → CSMS) ─────────────────────────────────────────────
-	async sendDataTransfer(
-		vendorId?: string,
-		messageId?: string,
-		data?: string,
-	) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		const config = s.getSlot(this.chargerId)?.config.vendorConfig;
-
-		const payload: { vendorId: string; messageId?: string; data?: string } =
-			{
-				vendorId: vendorId || config?.vendorId || "UnknownVendor",
-			};
-		if (messageId) payload.messageId = messageId;
-
-		// Use explicitly passed data, OR fallback to vendorConfig custom data
-		if (data) {
-			payload.data = data;
-		} else if (config?.customDataStr) {
-			try {
-				JSON.parse(config.customDataStr);
-				payload.data = config.customDataStr;
-			} catch (_) {
-				payload.data = config.customDataStr;
-			}
-		}
-
-		const msgId = nanoid(8);
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "DataTransfer",
-			payload,
-			ocppMessageId: msgId,
-		});
-		try {
-			const res = await this.sendCall("DataTransfer", payload);
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "DataTransferConf",
-				payload: res,
-			});
-			return res;
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action: "DataTransfer",
-				payload: { message: String(err) },
-			});
-		}
-	}
-
-	// ─── SecurityEventNotification (CP → CSMS) ────────────────────────────────
-	async sendSecurityEventNotification(type: string, info?: string) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		const payload = {
-			type,
-			timestamp: new Date().toISOString(),
-			techInfo: info ?? "",
-		};
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "SecurityEventNotification",
-			payload,
-		});
-		try {
-			const res = await this.sendCall(
-				"SecurityEventNotification",
-				payload,
-			);
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "SecurityEventNotificationConf",
-				payload: res,
-			});
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action: "SecurityEventNotification",
-				payload: { message: String(err) },
-			});
-		}
-	}
-
-	// ─── LogStatusNotification (CP → CSMS) ────────────────────────────────────
-	async sendLogStatusNotification(status: string, requestId?: number) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		const payload: Record<string, unknown> = { status };
-		if (requestId !== undefined) payload.requestId = requestId;
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "LogStatusNotification",
-			payload,
-		});
-		try {
-			const res = await this.sendCall(
-				"LogStatusNotification",
-				payload,
-			);
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: "LogStatusNotificationConf",
-				payload: res,
-			});
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action: "LogStatusNotification",
-				payload: { message: String(err) },
-			});
-		}
-	}
-
-	// ─── Auto Charge State Machine ─────────────────────────────────────────────
-	async startAutoCharge(connectorId: number) {
-		if (!this.client) return;
-		const { slot, store } = getSlotState(this.chargerId);
-		const conn = slot.runtime.connectors[connectorId];
-		if (!conn || conn.inTransaction) return;
-
-		store.addLog(this.chargerId, {
-			direction: "System",
-			action: "AutoCharge",
-			payload: { connectorId, message: "Starting auto-charge sequence" },
-		});
-
-		await this.startTransaction(connectorId, conn.idTag);
-
-		const freshSlot = useEmulatorStore
-			.getState()
-			.chargers.find((c) => c.id === this.chargerId);
-		const updatedConn = freshSlot?.runtime.connectors[connectorId];
-		if (!updatedConn?.inTransaction) {
-			store.addLog(this.chargerId, {
-				direction: "System",
-				action: "AutoCharge",
-				payload: {
-					connectorId,
-					message: "Auto-charge failed: transaction not started",
-				},
-			});
-			return;
-		}
-
-		const {
-			autoChargeDurationSec,
-			autoChargeTargetKWh,
-			autoChargeMeterIncrement,
-		} = slot.config.simulation;
-		const meterInterval = parseInt(
-			slot.config.stationConfig.find(
-				(k) => k.key === "MeterValueSampleInterval",
-			)?.value ?? "60",
-			10,
-		);
-
-		let elapsed = 0;
-		const tickSec = Math.min(meterInterval, 10);
-		this.autoChargeTimers[connectorId] = setInterval(() => {
-			elapsed += tickSec;
-			const s = useEmulatorStore.getState();
-			const current = s.chargers.find((c) => c.id === this.chargerId)
-				?.runtime.connectors[connectorId];
-			if (!current?.inTransaction) {
-				if (this.autoChargeTimers[connectorId]) {
-					clearInterval(this.autoChargeTimers[connectorId]);
-					delete this.autoChargeTimers[connectorId];
-				}
-				return;
-			}
-			const newMeter = roundWh(
-				current.currentMeterValue + autoChargeMeterIncrement,
-			);
-			s.updateConnector(this.chargerId, connectorId, {
-				currentMeterValue: newMeter,
-			});
-			// The target is energy for this session; the register itself keeps
-			// counting across sessions.
-			const deliveredWh = newMeter - current.startMeterValue;
-			const targetWh = autoChargeTargetKWh * 1000;
-			if (deliveredWh >= targetWh || elapsed >= autoChargeDurationSec) {
-				if (this.autoChargeTimers[connectorId]) {
-					clearInterval(this.autoChargeTimers[connectorId]);
-					delete this.autoChargeTimers[connectorId];
-				}
-				this.sendMeterValues(connectorId);
-				setTimeout(() => {
-					useEmulatorStore
-						.getState()
-						.updateConnector(this.chargerId, connectorId, {
-							stopReason: "Local",
-						});
-					this.stopTransaction(connectorId);
-					useEmulatorStore.getState().addLog(this.chargerId, {
-						direction: "System",
-						action: "AutoCharge",
-						payload: {
-							connectorId,
-							message: `Auto-charge complete: ${(
-								deliveredWh / 1000
-							).toFixed(1)} kWh in ${elapsed}s`,
-						},
-					});
-				}, 1000);
-			}
-		}, tickSec * 1000);
-	}
-
-	stopAutoCharge(connectorId: number) {
-		if (this.autoChargeTimers[connectorId]) {
-			clearInterval(this.autoChargeTimers[connectorId]);
-			delete this.autoChargeTimers[connectorId];
-		}
-		const slot = useEmulatorStore
-			.getState()
-			.chargers.find((c) => c.id === this.chargerId);
-		if (slot?.runtime.connectors[connectorId]?.inTransaction) {
-			this.stopTransaction(connectorId);
-		}
-	}
-
-	// ─── Raw OCPP Call (Message Composer) ──────────────────────────────────────
-	async sendRawCall(action: string, payload: Record<string, unknown>) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		s.addLog(this.chargerId, { direction: "Tx", action, payload });
-		try {
-			const res = await this.sendCall(action, payload);
-			s.addLog(this.chargerId, {
-				direction: "Rx",
-				action: `${action}Conf`,
-				payload: res,
-			});
-			return res;
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action,
-				payload: { message: String(err) },
-			});
-		}
-	}
-
-	// ─── Raw String Injection (Chaos Monkey) ─────────────────────────────────
-	sendRawString(raw: string) {
-		if (!this.client) return;
-		const s = useEmulatorStore.getState();
-		s.addLog(this.chargerId, {
-			direction: "Tx",
-			action: "RawInjection",
-			payload: { raw },
-		});
-		try {
-			// Access the underlying WebSocket and send the raw string directly
-			this.client.sendRaw(raw);
-		} catch (err) {
-			s.addLog(this.chargerId, {
-				direction: "Error",
-				action: "RawInjection",
-				payload: { message: String(err) },
-			});
-		}
-	}
-
-	// ─── Hardware Fault Injection ────────────────────────────────────────────
-	async triggerFault(connectorId: number, errorCode: string) {
-		const s = useEmulatorStore.getState();
-		const slot = s.chargers.find((c) => c.id === this.chargerId);
-		const connector = slot?.runtime.connectors[connectorId];
-
-		// If there's an active transaction, stop it with reason "Other"
-		if (connector?.inTransaction) {
-			s.updateConnector(this.chargerId, connectorId, {
-				stopReason: "Other",
-			});
-			await this.stopTransaction(connectorId);
-		}
-
-		// Set connector to Faulted
-		s.updateConnector(this.chargerId, connectorId, { status: "Faulted" });
-
-		// Send StatusNotification with the error code
-		const { config } = getSlotState(this.chargerId);
-		if (config.ocppVersion === "ocpp1.6") {
-			await this.sendStatusNotification(
-				connectorId,
-				"Faulted",
-				errorCode,
-			);
-		} else {
-			// OCPP 2.x
-			if (this.client) {
-				const payload = {
-					timestamp: new Date().toISOString(),
-					connectorStatus: "Faulted",
-					evseId: connectorId,
-					connectorId: 1,
-				};
-				s.addLog(this.chargerId, {
-					direction: "Tx",
-					action: "StatusNotification",
-					payload: { ...payload, errorCode },
-				});
-				try {
-					const res = await this.sendCall(
-						"StatusNotification",
-						payload,
-					);
-					s.addLog(this.chargerId, {
-						direction: "Rx",
-						action: "StatusNotificationConf",
-						payload: res,
-					});
-				} catch (err) {
-					s.addLog(this.chargerId, {
-						direction: "Error",
-						action: "StatusNotification",
-						payload: { message: String(err) },
-					});
-				}
-			}
-		}
-	}
-
-	// ─── Scenario Macros ────────────────────────────────────────────────────────
-
-	async runScenario(macroName: string, steps: ScenarioStep[]) {
-		const { store } = getSlotState(this.chargerId);
-		store.setScenarioState(this.chargerId, {
-			running: true,
-			currentStep: 0,
-			macroName,
-		});
-
-		for (let i = 0; i < steps.length; i++) {
-			// Check if we've been stopped mid-run
-			const state = store.getSlot(this.chargerId)?.runtime?.scenarioState;
-			if (!state?.running || state.macroName !== macroName) {
-				break; // aborted
-			}
-
-			store.setScenarioState(this.chargerId, { currentStep: i });
-			const step = steps[i];
-
-			// Delay
-			if (step.delayMs > 0) {
-				await new Promise((r) => setTimeout(r, step.delayMs));
-			}
-
-			// Execute action
-			const p = step.params || {};
-			const cid = Number(p.connectorId || 1);
-			const is2x =
-				store.getSlot(this.chargerId)?.config.ocppVersion ===
-				"ocpp2.0.1";
-
-			try {
-				const currentStatus = store.chargers.find(
-					(c) => c.id === this.chargerId,
-				)?.runtime.status;
-				if (currentStatus !== "connected") {
-					throw new Error(
-						`WebSocket disconnected (Status: ${currentStatus})`,
-					);
-				}
-
-				switch (step.action) {
-					case "plugIn":
-						if (is2x)
-							this.sendStatusNotification201(cid, 1, "Occupied");
-						else this.sendStatusNotification(cid, "Preparing");
-						store.updateConnector(this.chargerId, cid, {
-							cablePluggedIn: true,
-						});
-						break;
-
-					case "authorize": {
-						let authOk = false;
-						if (is2x) {
-							const res2 = (await this.sendAuthorize201(
-								String(p.idTag),
-							)) as { idTokenInfo?: { status: string } };
-							authOk =
-								res2 &&
-								res2?.idTokenInfo?.status === "Accepted";
-						} else {
-							authOk = await this.authorize(cid, String(p.idTag));
-						}
-						if (!authOk && p.idTag !== "INVALID_TAG") {
-							throw new Error("Authorization rejected by CSMS");
-						}
-						break;
-					}
-
-					case "startTransaction": {
-						if (is2x)
-							await this.startTransaction201(
-								cid,
-								String(p.idTag),
-							);
-						else await this.startTransaction(cid, String(p.idTag));
-
-						const conn = useEmulatorStore
-							.getState()
-							.chargers.find((c) => c.id === this.chargerId)
-							?.runtime.connectors[cid];
-						if (!conn?.inTransaction) {
-							throw new Error(
-								"StartTransaction was rejected or failed",
-							);
-						}
-						break;
-					}
-
-					case "sendMeterValues":
-						await this.sendMeterValues(cid);
-						break;
-
-					case "stopTransaction":
-						if (is2x) await this.stopTransaction201(cid);
-						else await this.stopTransaction(cid);
-						break;
-
-					case "unplug":
-						if (is2x)
-							this.sendStatusNotification201(cid, 1, "Available");
-						else this.sendStatusNotification(cid, "Available");
-						store.updateConnector(this.chargerId, cid, {
-							cablePluggedIn: false,
-						});
-						break;
-
-					case "sendStatus":
-						if (is2x)
-							this.sendStatusNotification201(
-								cid,
-								1,
-								String(p.status),
-							);
-						else this.sendStatusNotification(cid, String(p.status));
-						break;
-
-					case "triggerFault":
-						if (is2x)
-							this.sendStatusNotification201(cid, 1, "Faulted");
-						else
-							this.sendStatusNotification(
-								cid,
-								"Faulted",
-								String(p.errorCode || "InternalError"),
-							);
-						break;
-
-					case "wait":
-						// just a delay, handled above
-						break;
-				}
-			} catch (error) {
-				const err = Error.isError(error)
-					? error
-					: new Error(String(error));
-				console.warn(
-					`[Scenario] Step ${i} (${step.action}) failed:`,
-					err,
-				);
-				store.addLog(this.chargerId, {
-					direction: "System",
-					action: "ScenarioError",
-					payload: {
-						step: i,
-						action: step.action,
-						error: err?.message || String(err),
-					},
-					ocppMessageId: "",
-				});
-			}
-		}
-
-		// Reset state when done
-		store.setScenarioState(this.chargerId, { running: false });
-	}
+  private chargerId: string;
+  private client: BrowserOCPPClient | null = null;
+  private heartbeatTimer: Timer | null = null;
+  private meterTimers: Record<number, Timer> = {};
+  private uploadTimer: Timer | null = null;
+  private reservationTimers: Record<number, Timer> = {};
+  private autoChargeTimers: Record<number, Timer> = {};
+  /** Pending steps of the simulated firmware lifecycle. */
+  private firmwareTimers: Timer[] = [];
+  /** Pending reboot steps from a Hard Reset. */
+  private resetTimers: Timer[] = [];
+  private rebooting = false;
+  /** Locally assigned ids for transactions started while offline. */
+  private nextOfflineTransactionId = -1;
+
+  // ─── Transaction session bookkeeping ──────────────────────────────────────
+  // The connector slice in the store is UI state and gets reset on disconnect,
+  // connector reset, profile switches and so on. The CSMS, however, keeps a
+  // transaction open until it sees StopTransaction. These two maps are the
+  // service-owned record of what is actually running, so a RemoteStop can
+  // always be matched back to a connector.
+
+  /** Lifecycle phase per connector. Guards against overlapping starts/stops. */
+  private txPhase: Record<number, "idle" | "starting" | "active" | "stopping"> =
+    {};
+  /** transactionId (stringified) -> connectorId. Survives connector resets. */
+  private txIndex = new Map<string, number>();
+  /** Stop requested while the transaction was still starting. */
+  private deferredStops = new Map<number, string>();
+
+  constructor(chargerId: string) {
+    this.chargerId = chargerId;
+  }
+
+  // ─── Transaction session helpers ──────────────────────────────────────────
+
+  private phaseOf(connectorId: number) {
+    return this.txPhase[connectorId] ?? "idle";
+  }
+
+  /**
+   * Synchronously claim a connector for a new transaction. Returns false when
+   * one is already starting, running or stopping there.
+   *
+   * This must stay synchronous: it is what makes two RemoteStartTransaction
+   * requests arriving back to back resolve to a single transaction instead of
+   * two, only one of which the simulator would remember.
+   */
+  private claimForStart(connectorId: number): boolean {
+    if (this.phaseOf(connectorId) !== "idle") return false;
+    const conn = useEmulatorStore
+      .getState()
+      .chargers.find((c) => c.id === this.chargerId)?.runtime.connectors[
+      connectorId
+    ];
+    if (conn?.inTransaction) return false;
+    this.txPhase[connectorId] = "starting";
+    return true;
+  }
+
+  private releaseConnector(connectorId: number) {
+    this.txPhase[connectorId] = "idle";
+  }
+
+  /** Record a live transaction so RemoteStop can find it later. */
+  private registerTransaction(connectorId: number, transactionId: unknown) {
+    this.txPhase[connectorId] = "active";
+    if (transactionId !== null && transactionId !== undefined) {
+      this.txIndex.set(String(transactionId), connectorId);
+    }
+  }
+
+  private forgetTransaction(connectorId: number, transactionId?: unknown) {
+    this.txPhase[connectorId] = "idle";
+    if (transactionId !== null && transactionId !== undefined) {
+      this.txIndex.delete(String(transactionId));
+      return;
+    }
+    for (const [key, id] of this.txIndex) {
+      if (id === connectorId) this.txIndex.delete(key);
+    }
+  }
+
+  /**
+   * Map an incoming transactionId to a connector. Compares as strings so a
+   * CSMS that sends "1234" for a transaction we stored as 1234 still matches,
+   * and falls back to the store when the service map has been reset.
+   */
+  private resolveTransaction(transactionId: unknown): number | null {
+    if (transactionId === null || transactionId === undefined) return null;
+    const key = String(transactionId);
+    const known = this.txIndex.get(key);
+    if (known !== undefined) return known;
+
+    const slot = useEmulatorStore
+      .getState()
+      .chargers.find((c) => c.id === this.chargerId);
+    if (!slot) return null;
+    for (const conn of Object.values(slot.runtime.connectors)) {
+      if (
+        conn?.transactionId !== null &&
+        conn?.transactionId !== undefined &&
+        String(conn.transactionId) === key
+      ) {
+        return conn.connectorId;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Stable 2.x transaction id for an EVSE. Every TransactionEvent in one
+   * session must carry the same id — generating a fresh one per event (the
+   * old fallback) makes the CSMS see each event as a separate transaction.
+   */
+  private transactionIdFor(evseId: number): string {
+    const conn = useEmulatorStore
+      .getState()
+      .chargers.find((c) => c.id === this.chargerId)?.runtime.connectors[
+      evseId
+    ];
+    if (conn?.transactionId !== null && conn?.transactionId !== undefined) {
+      return String(conn.transactionId);
+    }
+    for (const [key, id] of this.txIndex) {
+      if (id === evseId) return key;
+    }
+    const generated = `TXN-${nanoid(6)}`;
+    this.txIndex.set(generated, evseId);
+    return generated;
+  }
+
+  /** Connectors this service believes are mid-transaction. */
+  private activeConnectorIds(): number[] {
+    const slot = useEmulatorStore
+      .getState()
+      .chargers.find((c) => c.id === this.chargerId);
+    const fromStore = Object.values(slot?.runtime.connectors ?? {})
+      .filter((c) => c?.inTransaction)
+      .map((c) => c.connectorId);
+    return [...new Set([...fromStore, ...this.txIndex.values()])];
+  }
+
+  /** Always clear before setting — an overwritten interval can never be stopped. */
+  private setMeterTimer(connectorId: number, timer: Timer) {
+    this.clearMeterTimer(connectorId);
+    this.meterTimers[connectorId] = timer;
+  }
+
+  private clearReservationTimer(connectorId: number) {
+    if (this.reservationTimers[connectorId]) {
+      clearTimeout(this.reservationTimers[connectorId]);
+      delete this.reservationTimers[connectorId];
+    }
+  }
+
+  private clearMeterTimer(connectorId: number) {
+    if (this.meterTimers[connectorId]) {
+      clearInterval(this.meterTimers[connectorId]);
+      delete this.meterTimers[connectorId];
+    }
+  }
+
+  // ─── Store helpers ────────────────────────────────────────────────────────
+
+  // biome-ignore lint/correctness/noUnusedPrivateClassMembers: we may need this later
+  private get store() {
+    return useEmulatorStore.getState();
+  }
+
+  // ─── Connection ────────────────────────────────────────────────────────────
+
+  async connect() {
+    const { config, store } = getSlotState(this.chargerId);
+    if (this.client) await this.disconnect();
+
+    store.setStatus(this.chargerId, "connecting");
+
+    try {
+      this.client = new BrowserOCPPClient({
+        endpoint: config.endpoint,
+        identity: config.chargePointId,
+        protocols: [config.ocppVersion],
+        reconnect: true,
+        maxReconnects: 5,
+        logging: false,
+        ...(config.securityProfile === 1 && config.basicAuthPassword
+          ? { password: config.basicAuthPassword }
+          : {}),
+      });
+
+      this.client.on("open", () => {
+        const s = useEmulatorStore.getState();
+        s.setStatus(this.chargerId, "connected");
+        s.setConnectedAt(this.chargerId, Date.now());
+        s.addLog(this.chargerId, {
+          direction: "System",
+          action: "Connected",
+          payload: {
+            url: config.endpoint,
+            protocol: config.ocppVersion,
+          },
+        });
+        this.sendBootNotification();
+      });
+
+      this.client.on("error", (err: Event | Error) => {
+        const message =
+          err instanceof Error ? err.message : "WebSocket error event";
+        const s = useEmulatorStore.getState();
+        s.setStatus(this.chargerId, "faulted");
+        const isHttps =
+          typeof window !== "undefined" &&
+          window.location.protocol === "https:";
+        const isLocal =
+          config.endpoint.includes("localhost") ||
+          config.endpoint.includes("127.0.0.1");
+        const payload: Record<string, unknown> = { message };
+        if (isHttps && isLocal) {
+          payload.hint =
+            "Connecting to ws://localhost from HTTPS? Your browser may block insecure WebSockets. Allow 'Insecure content' or 'Local network access' in site settings, or open the Localhost Guide in the header.";
+        }
+        s.addLog(this.chargerId, {
+          direction: "Error",
+          action: "WebSocket Error",
+          payload,
+        });
+      });
+
+      this.client.on("close", (info: { code: number; reason: string }) => {
+        const s = useEmulatorStore.getState();
+        s.setStatus(this.chargerId, "disconnected");
+        s.setConnectedAt(this.chargerId, null);
+        this.clearAllTimers();
+        s.addLog(this.chargerId, {
+          direction: "System",
+          action: "Disconnected",
+          payload: { code: info.code, reason: info.reason },
+        });
+        // Connectors mid-transaction keep their session: the CSMS
+        // still has that transaction open and will expect to be
+        // able to stop it once we are back. Wiping it here is what
+        // makes a post-reconnect RemoteStop unmatchable.
+        const slot = s.chargers.find((c) => c.id === this.chargerId);
+        const n = slot?.config.numberOfConnectors ?? 1;
+        for (let i = 1; i <= n; i++) {
+          if (slot?.runtime.connectors[i]?.inTransaction) continue;
+          s.resetConnector(this.chargerId, i);
+          this.releaseConnector(i);
+        }
+      });
+
+      this.client.on("connecting", (info: { url: string }) => {
+        useEmulatorStore.getState().addLog(this.chargerId, {
+          direction: "System",
+          action: "Connecting",
+          payload: { url: info.url },
+        });
+      });
+
+      this.client.on(
+        "reconnect",
+        (info: { attempt: number; delay: number }) => {
+          useEmulatorStore.getState().addLog(this.chargerId, {
+            direction: "System",
+            action: "Reconnecting",
+            payload: info,
+          });
+        },
+      );
+
+      this.installResponseDelay();
+      this.registerHandlers();
+      await this.client.connect();
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to create client";
+      useEmulatorStore.getState().setStatus(this.chargerId, "faulted");
+      useEmulatorStore.getState().addLog(this.chargerId, {
+        direction: "Error",
+        action: "Connect Failed",
+        payload: { message: msg },
+      });
+    }
+  }
+
+  /**
+   * @param internal true when called as part of a simulated reboot, which
+   * must not cancel the reboot it is a step of.
+   */
+  async disconnect(internal = false) {
+    if (!internal) this.cancelReboot();
+    try {
+      await this.client?.close({ code: 1000, reason: "User disconnect" });
+    } catch (_) {}
+    this.client = null;
+    this.clearAllTimers();
+    useEmulatorStore.getState().setStatus(this.chargerId, "disconnected");
+  }
+
+  /** Hard Reset: drop the connection, then come back up like a real reboot. */
+  private scheduleReboot() {
+    this.cancelReboot();
+    this.rebooting = true;
+    this.resetTimers.push(
+      setTimeout(async () => {
+        await this.disconnect(true);
+        if (!this.rebooting) return;
+        this.resetTimers.push(
+          setTimeout(() => {
+            this.rebooting = false;
+            this.connect();
+          }, 1500),
+        );
+      }, 300),
+    );
+  }
+
+  /** A manual disconnect cancels a pending reboot instead of racing it. */
+  private cancelReboot() {
+    this.rebooting = false;
+    this.resetTimers.forEach(clearTimeout);
+    this.resetTimers = [];
+  }
+
+  private clearAllTimers() {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    Object.values(this.meterTimers).forEach(clearInterval);
+    if (this.uploadTimer) clearInterval(this.uploadTimer);
+    Object.values(this.reservationTimers).forEach(clearTimeout);
+    Object.values(this.autoChargeTimers).forEach(clearInterval);
+    this.firmwareTimers.forEach(clearTimeout);
+    this.firmwareTimers = [];
+    this.heartbeatTimer = null;
+    this.meterTimers = {};
+    this.uploadTimer = null;
+    this.reservationTimers = {};
+    this.autoChargeTimers = {};
+  }
+
+  // ─── Incoming CSMS Handlers ───────────────────────────────────────────────
+
+  /**
+   * Single exit point for outgoing OCPP calls.
+   *
+   * In simulated offline mode nothing reaches the socket: the message is
+   * appended to the offline queue and answered locally, so the charge point
+   * keeps charging and metering exactly as a real one does when it loses its
+   * backend. The queue is replayed in order when the station comes back.
+   */
+  private async sendCall<T = unknown>(
+    action: string,
+    params: unknown,
+  ): Promise<T> {
+    if (!this.client) throw new Error("Not connected");
+    const s = useEmulatorStore.getState();
+    if (s.getSlot(this.chargerId)?.runtime.offlineMode) {
+      s.addToOfflineQueue(this.chargerId, {
+        action,
+        payload: params,
+        timestamp: new Date().toISOString(),
+      });
+      s.addLog(this.chargerId, {
+        direction: "System",
+        action: "OfflineQueued",
+        payload: {
+          queuedAction: action,
+          depth:
+            (s.getSlot(this.chargerId)?.runtime.offlineQueue.length ?? 0) + 1,
+        },
+      });
+      return this.offlineResponse<T>(action);
+    }
+    return (await this.client.call(
+      action,
+      params as Record<string, unknown>,
+    )) as T;
+  }
+
+  /**
+   * What the charge point assumes while it cannot reach the CSMS. Offline
+   * transactions get a locally assigned negative id, which is the usual
+   * convention for "the CSMS has not numbered this yet".
+   */
+  private offlineResponse<T>(action: string): T {
+    switch (action) {
+      case "Authorize":
+        return {
+          idTagInfo: { status: "Accepted" },
+          idTokenInfo: { status: "Accepted" },
+        } as T;
+      case "StartTransaction":
+        return {
+          transactionId: this.nextOfflineTransactionId--,
+          idTagInfo: { status: "Accepted" },
+        } as T;
+      case "BootNotification":
+        return { status: "Accepted", interval: 300 } as T;
+      default:
+        return {} as T;
+    }
+  }
+
+  /** Replays everything captured while offline, oldest first. */
+  private async flushOfflineQueue() {
+    const s = useEmulatorStore.getState();
+    const queued = s.getSlot(this.chargerId)?.runtime.offlineQueue ?? [];
+    if (queued.length === 0) return;
+    s.clearOfflineQueue(this.chargerId);
+    s.addLog(this.chargerId, {
+      direction: "System",
+      action: "OfflineReplay",
+      payload: { count: queued.length },
+    });
+    for (const entry of queued) {
+      if (!this.client) break;
+      try {
+        await this.client.call(
+          entry.action,
+          entry.payload as Record<string, unknown>,
+        );
+      } catch (err) {
+        useEmulatorStore.getState().addLog(this.chargerId, {
+          direction: "Error",
+          action: "OfflineReplay",
+          payload: {
+            queuedAction: entry.action,
+            message: String(err),
+          },
+        });
+      }
+    }
+  }
+
+  /**
+   * Toggle simulated offline mode. Going back online replays the queue, so
+   * the CSMS receives the session it missed.
+   */
+  async setOfflineMode(offline: boolean) {
+    const s = useEmulatorStore.getState();
+    const current = s.getSlot(this.chargerId)?.runtime.offlineMode ?? false;
+    if (current === offline) return;
+    s.toggleOfflineMode(this.chargerId);
+    s.addLog(this.chargerId, {
+      direction: "System",
+      action: offline ? "WentOffline" : "WentOnline",
+      payload: {},
+    });
+    if (!offline) await this.flushOfflineQueue();
+  }
+
+  /**
+   * Holds every outgoing response back by the configured delay.
+   *
+   * Registered as middleware rather than wrapped around each handler so the
+   * library keeps applying its per-message request/response types. The charge
+   * point still acts on the request immediately — only the reply is late,
+   * which is what a slow station looks like to a CSMS and is how you provoke
+   * its call timeout.
+   */
+  private installResponseDelay() {
+    if (!this.client) return;
+    this.client.use(async (ctx, next) => {
+      // The middleware wraps dispatch *and* the reply, so the wait has to
+      // happen before next() — delaying afterwards would run once the
+      // CALLRESULT had already gone out.
+      if (ctx.type === "incoming_call") {
+        const delay =
+          useEmulatorStore.getState().getSlot(this.chargerId)?.config.simulation
+            .responseDelayMs ?? 0;
+        if (delay > 0) {
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+      return next();
+    });
+  }
+
+  /** Dispatch to the right handler set based on configured OCPP version */
+  private registerHandlers() {
+    if (!this.client) return;
+    const { config } = getSlotState(this.chargerId);
+    if (config.ocppVersion === "ocpp1.6") {
+      this.registerHandlers16();
+    } else {
+      // ocpp2.0.1 and ocpp2.1 share the same handler set
+      this.registerHandlers201();
+    }
+  }
+
+  private registerHandlers16() {
+    if (!this.client) return;
+
+    const cid = this.chargerId;
+
+    // ── Reset ──
+    this.client.handle("Reset", (ctx) => {
+      const payload = ctx.params as { type: string };
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "Reset",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      if (payload.type === "Hard") {
+        this.scheduleReboot();
+      }
+      return { status: "Accepted" };
+    });
+
+    // ── RemoteStartTransaction ──
+    this.client.handle("RemoteStartTransaction", (ctx) => {
+      const payload = ctx.params as {
+        connectorId?: number;
+        idTag: string;
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers.find((c) => c.id === cid);
+      const connId = payload.connectorId ?? 1;
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "RemoteStartTransaction",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      if (!slot?.runtime.connectors[connId]) return { status: "Rejected" };
+      // Claim synchronously: a duplicate or retried RemoteStart must not
+      // open a second transaction the simulator would then forget about.
+      if (!this.claimForStart(connId)) return { status: "Rejected" };
+      setTimeout(() => this.startTransaction(connId, payload.idTag), 500);
+      return { status: "Accepted" };
+    });
+
+    // ── RemoteStopTransaction ──
+    this.client.handle("RemoteStopTransaction", (ctx) => {
+      const payload = ctx.params as { transactionId: number };
+      const s = useEmulatorStore.getState();
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "RemoteStopTransaction",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const connId = this.resolveTransaction(payload.transactionId);
+      if (connId === null) return { status: "Rejected" };
+      if (this.phaseOf(connId) === "starting") {
+        // The transaction is mid-start; honour the stop once it lands
+        // rather than dropping it on the floor.
+        this.deferredStops.set(connId, "Remote");
+        return { status: "Accepted" };
+      }
+      setTimeout(() => this.stopTransaction(connId, "Remote"), 500);
+      return { status: "Accepted" };
+    });
+
+    // ── TriggerMessage ──
+    this.client.handle("TriggerMessage", (ctx) => {
+      const payload = ctx.params as {
+        requestedMessage: string;
+        connectorId?: number;
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers.find((c) => c.id === cid);
+      const connId = payload.connectorId ?? 1;
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "TriggerMessage",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const { requestedMessage } = payload;
+      if (
+        requestedMessage === "MeterValues" &&
+        !slot?.runtime.connectors[connId]?.inTransaction
+      )
+        return { status: "Rejected" };
+      setTimeout(() => {
+        if (requestedMessage === "Heartbeat") this.sendHeartbeat();
+        else if (requestedMessage === "BootNotification")
+          this.sendBootNotification();
+        else if (requestedMessage === "StatusNotification") {
+          const st =
+            useEmulatorStore.getState().chargers.find((c) => c.id === cid)
+              ?.runtime.connectors[connId]?.status ?? "Available";
+          this.sendStatusNotification(connId, st);
+        } else if (requestedMessage === "MeterValues")
+          this.sendMeterValues(connId);
+        else if (requestedMessage === "DiagnosticsStatusNotification") {
+          const isUp =
+            useEmulatorStore.getState().chargers.find((c) => c.id === cid)
+              ?.runtime.isUploading ?? false;
+          this.sendDiagnosticsStatus(isUp ? "Uploading" : "Idle");
+        } else if (requestedMessage === "FirmwareStatusNotification") {
+          const fw =
+            useEmulatorStore.getState().chargers.find((c) => c.id === cid)
+              ?.config.simulation.firmwareStatus ?? "Downloaded";
+          this.sendFirmwareStatus(fw);
+        }
+      }, 200);
+      return { status: "Accepted" };
+    });
+
+    // ── GetConfiguration ──
+    this.client.handle("GetConfiguration", (ctx) => {
+      const payload = ctx.params as { key?: string[] };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "GetConfiguration",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const keys = payload?.key;
+      const configurationKey = keys?.length
+        ? slot.config.stationConfig.filter((k: StationConfigKey) =>
+            keys.includes(k.key),
+          )
+        : slot.config.stationConfig;
+      const unknownKey = keys?.length
+        ? keys.filter(
+            (k: string) =>
+              !slot.config.stationConfig.find(
+                (sc: StationConfigKey) => sc.key === k,
+              ),
+          )
+        : [];
+      return { configurationKey, unknownKey };
+    });
+
+    // ── ChangeConfiguration ──
+    this.client.handle("ChangeConfiguration", (ctx) => {
+      const payload = ctx.params as { key: string; value: string };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "ChangeConfiguration",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const found = slot.config.stationConfig.find(
+        (k: StationConfigKey) => k.key === payload.key,
+      );
+      if (!found) return { status: "NotSupported" };
+      if (found.readonly) return { status: "Rejected" };
+
+      s.updateStationConfigKey(cid, payload.key, payload.value);
+
+      // Reactivity Engine: Apply changes immediately
+      if (payload.key === "HeartbeatInterval") {
+        const interval = Number(payload.value);
+        if (!Number.isNaN(interval) && interval > 0) {
+          this.startHeartbeatTimer(interval);
+        }
+      }
+      if (payload.key === "MeterValueSampleInterval") {
+        // Re-arm any running meter loop so the new sample rate takes
+        // effect on the current transaction, not just the next one.
+        const interval = Number(payload.value);
+        if (!Number.isNaN(interval) && interval > 0) {
+          for (const connId of this.activeConnectorIds()) {
+            this.startMeterLoop(connId);
+          }
+        }
+      }
+
+      return { status: "Accepted" };
+    });
+
+    // ── GetDiagnostics ──
+    this.client.handle("GetDiagnostics", (ctx) => {
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "GetDiagnostics",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      this.startDiagnosticsUpload();
+      return { fileName: slot.config.simulation.diagnosticFileName };
+    });
+
+    // ── ClearCache ──
+    this.client.handle("ClearCache", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "ClearCache",
+        payload: {},
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── ChangeAvailability ──
+    this.client.handle("ChangeAvailability", (ctx) => {
+      const payload = ctx.params as {
+        connectorId: number;
+        type: "Inoperative" | "Operative";
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "ChangeAvailability",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const newStatus =
+        payload.type === "Inoperative" ? "Unavailable" : "Available";
+      if (payload.connectorId === 0) {
+        for (let i = 1; i <= slot.config.numberOfConnectors; i++) {
+          s.updateConnector(cid, i, {
+            status: newStatus as statusType,
+          });
+          this.sendStatusNotification(i, newStatus);
+        }
+      } else {
+        s.updateConnector(cid, payload.connectorId, {
+          status: newStatus as statusType,
+        });
+        this.sendStatusNotification(payload.connectorId, newStatus);
+      }
+      return { status: "Accepted" };
+    });
+
+    // ── ReserveNow ──
+    this.client.handle("ReserveNow", (ctx) => {
+      const payload = ctx.params as {
+        connectorId: number;
+        expiryDate: string;
+        idTag: string;
+        parentIdTag?: string;
+        reservationId: number;
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "ReserveNow",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const conn = slot.runtime.connectors[payload.connectorId];
+      if (!conn) return { status: "Rejected" };
+      if (conn.inTransaction) return { status: "Occupied" };
+      if (conn.status === "Faulted") return { status: "Faulted" };
+      if (conn.status === "Unavailable") return { status: "Unavailable" };
+      // Already held by a different reservation.
+      if (
+        conn.reservation &&
+        conn.reservation.reservationId !== payload.reservationId
+      )
+        return { status: "Occupied" };
+      // Re-reserving the same connector replaces the pending expiry.
+      this.clearReservationTimer(payload.connectorId);
+      s.updateConnector(cid, payload.connectorId, {
+        status: "Reserved",
+        reservation: {
+          reservationId: payload.reservationId,
+          idTag: payload.idTag,
+          expiryDate: payload.expiryDate,
+          parentIdTag: payload.parentIdTag,
+        },
+      });
+      this.sendStatusNotification(payload.connectorId, "Reserved");
+      const expiryMs = new Date(payload.expiryDate).getTime() - Date.now();
+      if (expiryMs > 0) {
+        this.reservationTimers[payload.connectorId] = setTimeout(() => {
+          const current = useEmulatorStore
+            .getState()
+            .chargers.find((c) => c.id === cid)?.runtime.connectors[
+            payload.connectorId
+          ];
+          delete this.reservationTimers[payload.connectorId];
+          if (current?.reservation?.reservationId !== payload.reservationId)
+            return;
+          if (current.inTransaction) {
+            // Charging started under this reservation: drop the
+            // reservation but never announce Available mid-session.
+            useEmulatorStore
+              .getState()
+              .updateConnector(cid, payload.connectorId, {
+                reservation: null,
+              });
+            return;
+          }
+          {
+            useEmulatorStore
+              .getState()
+              .updateConnector(cid, payload.connectorId, {
+                status: "Available",
+                reservation: null,
+              });
+            this.sendStatusNotification(payload.connectorId, "Available");
+            useEmulatorStore.getState().addLog(cid, {
+              direction: "System",
+              action: "ReservationExpired",
+              payload: {
+                connectorId: payload.connectorId,
+                reservationId: payload.reservationId,
+              },
+            });
+          }
+        }, expiryMs);
+      }
+      return { status: "Accepted" };
+    });
+
+    // ── CancelReservation ──
+    this.client.handle("CancelReservation", (ctx) => {
+      const payload = ctx.params as { reservationId: number };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) return { status: "Rejected" };
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "CancelReservation",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      for (let i = 1; i <= slot.config.numberOfConnectors; i++) {
+        if (
+          slot.runtime.connectors[i]?.reservation?.reservationId ===
+          payload.reservationId
+        ) {
+          s.updateConnector(cid, i, {
+            status: "Available",
+            reservation: null,
+          });
+          this.clearReservationTimer(i);
+          this.sendStatusNotification(i, "Available");
+          return { status: "Accepted" };
+        }
+      }
+      return { status: "Rejected" };
+    });
+
+    // ── SetChargingProfile ──
+    this.client.handle("SetChargingProfile", (ctx) => {
+      const payload = ctx.params as {
+        connectorId: number;
+        csChargingProfiles: ChargingProfile;
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "SetChargingProfile",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const conn = slot.runtime.connectors[payload.connectorId];
+      if (!conn && payload.connectorId !== 0) return { status: "Rejected" };
+      const profile = payload.csChargingProfiles;
+      const targetId = payload.connectorId === 0 ? 1 : payload.connectorId;
+      const existing = (
+        slot.runtime.connectors[targetId]?.chargingProfiles ?? []
+      ).filter(
+        (p) =>
+          !(
+            p.chargingProfileId === profile.chargingProfileId &&
+            p.stackLevel === profile.stackLevel
+          ),
+      );
+      s.updateConnector(cid, targetId, {
+        chargingProfiles: [...existing, profile],
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── ClearChargingProfile ──
+    this.client.handle("ClearChargingProfile", (ctx) => {
+      const payload = ctx.params as {
+        id?: number;
+        connectorId?: number;
+        chargingProfilePurpose?: string;
+        stackLevel?: number;
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "ClearChargingProfile",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      let found = false;
+      for (let i = 1; i <= slot.config.numberOfConnectors; i++) {
+        // connectorId absent or 0 means "every connector".
+        if (
+          payload.connectorId !== undefined &&
+          payload.connectorId !== i &&
+          payload.connectorId !== 0
+        )
+          continue;
+        const profiles = slot.runtime.connectors[i]?.chargingProfiles ?? [];
+        // A profile is cleared when it matches ALL supplied criteria;
+        // an omitted criterion is a wildcard, so a request carrying no
+        // criteria at all clears every profile on the connector.
+        const filtered = profiles.filter((p) => {
+          const matches =
+            (payload.id === undefined || p.chargingProfileId === payload.id) &&
+            (!payload.chargingProfilePurpose ||
+              p.chargingProfilePurpose === payload.chargingProfilePurpose) &&
+            (payload.stackLevel === undefined ||
+              p.stackLevel === payload.stackLevel);
+          return !matches;
+        });
+        if (filtered.length !== profiles.length) {
+          found = true;
+          s.updateConnector(cid, i, { chargingProfiles: filtered });
+        }
+      }
+      return { status: found ? "Accepted" : "Unknown" };
+    });
+
+    // ── GetCompositeSchedule ──
+    this.client.handle("GetCompositeSchedule", (ctx) => {
+      const payload = ctx.params as {
+        connectorId: number;
+        duration: number;
+        chargingRateUnit?: "A" | "W";
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "GetCompositeSchedule",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const conn = slot.runtime.connectors[payload.connectorId];
+      if (!conn || conn.chargingProfiles.length === 0)
+        return { status: "Rejected" };
+      const sorted = [...conn.chargingProfiles].sort(
+        (a, b) => b.stackLevel - a.stackLevel,
+      );
+      const top = sorted[0];
+      return {
+        status: "Accepted",
+        connectorId: payload.connectorId,
+        scheduleStart: new Date().toISOString(),
+        chargingSchedule: top.chargingSchedule,
+      };
+    });
+
+    // ── SendLocalList ──
+    this.client.handle("SendLocalList", (ctx) => {
+      const payload = ctx.params as {
+        listVersion: number;
+        localAuthorizationList?: LocalAuthEntry[];
+        updateType: "Differential" | "Full";
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "NotSupported" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "SendLocalList",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      if (
+        payload.listVersion <= slot.runtime.localAuthListVersion &&
+        payload.updateType === "Differential"
+      ) {
+        return { status: "VersionMismatch" };
+      }
+      const newEntries = payload.localAuthorizationList ?? [];
+      if (payload.updateType === "Full") {
+        s.setLocalAuthList(cid, newEntries, payload.listVersion);
+      } else {
+        const merged = [...slot.runtime.localAuthList];
+        newEntries.forEach((entry) => {
+          const idx = merged.findIndex((e) => e.idTag === entry.idTag);
+          if (idx >= 0) merged[idx] = entry;
+          else merged.push(entry);
+        });
+        s.setLocalAuthList(cid, merged, payload.listVersion);
+      }
+      return { status: "Accepted" };
+    });
+
+    // ── GetLocalListVersion ──
+    this.client.handle("GetLocalListVersion", (ctx) => {
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "GetLocalListVersion",
+        payload: {},
+        ocppMessageId: ctx.messageId,
+      });
+      return { listVersion: slot.runtime.localAuthListVersion };
+    });
+
+    // ── DataTransfer (CSMS → CP) ──
+    this.client.handle("DataTransfer", (ctx) => {
+      const payload = ctx.params as {
+        vendorId: string;
+        messageId?: string;
+        data?: string;
+      };
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "DataTransfer",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── ExtendedTriggerMessage ──
+    this.client.handle("ExtendedTriggerMessage", (ctx) => {
+      const payload = ctx.params as {
+        requestedMessage: string;
+        connectorId?: number;
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      const connId = payload.connectorId ?? 1;
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "ExtendedTriggerMessage",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      setTimeout(() => {
+        const msg = payload.requestedMessage;
+        if (msg === "BootNotification") this.sendBootNotification();
+        else if (msg === "Heartbeat") this.sendHeartbeat();
+        else if (msg === "StatusNotification") {
+          const st =
+            useEmulatorStore.getState().chargers.find((c) => c.id === cid)
+              ?.runtime.connectors[connId]?.status ?? "Available";
+          this.sendStatusNotification(connId, st);
+        } else if (
+          msg === "MeterValues" &&
+          slot.runtime.connectors[connId]?.inTransaction
+        )
+          this.sendMeterValues(connId);
+        else if (msg === "FirmwareStatusNotification")
+          this.sendFirmwareStatus(slot.config.simulation.firmwareStatus);
+        else if (msg === "LogStatusNotification")
+          this.sendDiagnosticsStatus(
+            slot.runtime.isUploading ? "Uploading" : "Idle",
+          );
+      }, 200);
+      return { status: "Accepted" };
+    });
+
+    // ── GetLog ──
+    this.client.handle("GetLog", (ctx) => {
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers?.find((c) => c.id === cid);
+      if (!slot) {
+        return { status: "Rejected" };
+      }
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "GetLog",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      this.startDiagnosticsUpload();
+      return {
+        status: "Accepted",
+        filename: slot.config.simulation.diagnosticFileName,
+      };
+    });
+
+    // ── SignedUpdateFirmware ──
+    this.client.handle("SignedUpdateFirmware", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "SignedUpdateFirmware",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      this.runFirmwareSequence([
+        { status: "Downloading", delay: 0 },
+        { status: "Downloaded", delay: 3000 },
+        { status: "Installing", delay: 3000 },
+        { status: "Installed", delay: 3000 },
+      ]);
+      return { status: "Accepted" };
+    });
+
+    // ── InstallCertificate ──
+    this.client.handle("InstallCertificate", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "InstallCertificate",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── DeleteCertificate ──
+    this.client.handle("DeleteCertificate", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "DeleteCertificate",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── GetInstalledCertificateIds ──
+    this.client.handle("GetInstalledCertificateIds", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "GetInstalledCertificateIds",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted", certificateHashData: [] };
+    });
+
+    // ── CertificateSigned ──
+    this.client.handle("CertificateSigned", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "CertificateSigned",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── UnlockConnector ──
+    this.client.handle("UnlockConnector", (ctx) => {
+      const payload = ctx.params as { connectorId: number };
+      const s = useEmulatorStore.getState();
+      const connId = payload.connectorId ?? 1;
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "UnlockConnector",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const slot = s.chargers.find((c) => c.id === cid);
+      const conn = slot?.runtime.connectors[connId];
+      if (!conn) return { status: "NotSupported" };
+
+      // The connector's configured unlockStatus is the simulation lever
+      // for an unlock that fails on real hardware (jammed cable, etc.).
+      if (conn.unlockStatus === "UnlockFailed") {
+        return { status: "UnlockFailed" };
+      }
+
+      // Unlock the cable
+      s.updateConnector(cid, connId, {
+        cableLocked: false,
+        cablePluggedIn: false,
+      });
+
+      if (conn.inTransaction) {
+        // stopTransaction drives Finishing -> StopTransaction ->
+        // Available itself; emitting Available here as well would put
+        // the status sequence out of order on the CSMS.
+        s.updateConnector(cid, connId, {
+          stopReason: "EVDisconnected",
+        });
+        this.stopTransaction(connId, "EVDisconnected");
+      } else {
+        this.sendStatusNotification(connId, "Available");
+      }
+
+      return { status: "Unlocked" };
+    });
+
+    // ── UpdateFirmware ──
+    this.client.handle("UpdateFirmware", (ctx) => {
+      const payload = ctx.params as {
+        location: string;
+        retrieveDate: string;
+        retries?: number;
+        retryInterval?: number;
+      };
+      const s = useEmulatorStore.getState();
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "UpdateFirmware",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      // retrieveDate is when the charge point should START retrieving the
+      // firmware — a CSMS scheduling an update for later expects nothing
+      // to happen until then.
+      const retrieveAt = Date.parse(payload.retrieveDate);
+      const startDelay = Number.isNaN(retrieveAt)
+        ? 0
+        : Math.max(0, retrieveAt - Date.now());
+      if (startDelay > 0) {
+        s.addLog(cid, {
+          direction: "System",
+          action: "FirmwareUpdateScheduled",
+          payload: {
+            location: payload.location,
+            retrieveDate: payload.retrieveDate,
+            startsInSeconds: Math.round(startDelay / 1000),
+          },
+        });
+      }
+      this.runFirmwareSequence(
+        [
+          { status: "Downloading", delay: 2000 },
+          { status: "Downloaded", delay: 3000 },
+          { status: "Installing", delay: 3000 },
+          { status: "Installed", delay: 2000 },
+        ],
+        startDelay,
+      );
+      return {};
+    });
+  }
+
+  // ─── OCPP 2.x Incoming Handlers ───────────────────────────────────────────
+
+  private registerHandlers201() {
+    if (!this.client) return;
+    const cid = this.chargerId;
+
+    // ── Reset ──
+    this.client.handle("Reset", (ctx) => {
+      const payload = ctx.params as { type: string };
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "Reset",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      if (payload.type === "Immediate") {
+        setTimeout(() => {
+          this.disconnect();
+          setTimeout(() => this.connect(), 1500);
+        }, 300);
+      }
+      return { status: "Accepted" };
+    });
+
+    // ── ChangeAvailability ──
+    this.client.handle("ChangeAvailability", (ctx) => {
+      const payload = ctx.params as {
+        evseId?: number;
+        operationalStatus: string;
+      };
+      const s = useEmulatorStore.getState();
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "ChangeAvailability",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const evseId = payload.evseId ?? 0;
+      const status =
+        payload.operationalStatus === "Operative" ? "Available" : "Unavailable";
+      if (evseId === 0) {
+        // all EVSEs
+        const slot = s.chargers.find((c) => c.id === cid);
+        slot?.runtime.evse.forEach((e) => {
+          s.updateEVSE(cid, e.evseId, { status });
+        });
+      } else {
+        s.updateEVSE(cid, evseId, {
+          status: status as "Available" | "Unavailable",
+        });
+      }
+      return { status: "Accepted" };
+    });
+
+    // ── GetVariables ──
+    this.client.handle("GetVariables", (ctx) => {
+      const payload = ctx.params as {
+        getVariableData: {
+          component: { name: string };
+          variable: { name: string };
+          attributeType?: string;
+        }[];
+      };
+      const s = useEmulatorStore.getState();
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "GetVariables",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const slot = s.chargers.find((c) => c.id === cid);
+      const model = slot?.runtime.deviceModel ?? [];
+      const result = payload.getVariableData.map((req) => {
+        const found = model.find(
+          (v) =>
+            v.component === req.component.name &&
+            v.variable === req.variable.name,
+        );
+        return {
+          component: req.component,
+          variable: req.variable,
+          attributeType: (req.attributeType ?? "Actual") as
+            | "Actual"
+            | "Target"
+            | "MinSet"
+            | "MaxSet",
+          attributeStatus: (found ? "Accepted" : "UnknownVariable") as
+            | "Accepted"
+            | "Rejected"
+            | "UnknownComponent"
+            | "UnknownVariable"
+            | "NotSupportedAttributeType",
+          attributeValue: found?.value,
+        };
+      });
+      return { getVariableResult: result };
+    });
+
+    // ── SetVariables ──
+    this.client.handle("SetVariables", (ctx) => {
+      const payload = ctx.params as {
+        setVariableData: {
+          component: { name: string };
+          variable: { name: string };
+          attributeValue: string;
+        }[];
+      };
+      const s = useEmulatorStore.getState();
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "SetVariables",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const slot = s.chargers.find((c) => c.id === cid);
+      const model = slot?.runtime.deviceModel ?? [];
+      const result = payload.setVariableData.map((req) => {
+        const found = model.find(
+          (v) =>
+            v.component === req.component.name &&
+            v.variable === req.variable.name,
+        );
+        if (found?.mutability === "ReadOnly") {
+          return {
+            component: req.component,
+            variable: req.variable,
+            attributeStatus: "Rejected" as
+              | "Accepted"
+              | "Rejected"
+              | "UnknownComponent"
+              | "UnknownVariable"
+              | "NotSupportedAttributeType",
+          };
+        }
+        s.setDeviceVariable(
+          cid,
+          req.component.name,
+          req.variable.name,
+          req.attributeValue,
+        );
+
+        // Reactivity Engine: Apply changes immediately
+        if (
+          req.variable.name === "HeartbeatInterval" ||
+          (req.component.name === "OCPPCommCtrlr" &&
+            req.variable.name === "HeartbeatInterval") ||
+          (req.component.name === "HeartbeatInterval" &&
+            req.variable.name === "Interval")
+        ) {
+          const interval = Number(req.attributeValue);
+          if (!Number.isNaN(interval) && interval > 0) {
+            this.startHeartbeatTimer(interval);
+          }
+        }
+
+        return {
+          component: req.component,
+          variable: req.variable,
+          attributeStatus: "Accepted" as
+            | "Accepted"
+            | "Rejected"
+            | "UnknownComponent"
+            | "UnknownVariable"
+            | "NotSupportedAttributeType",
+        };
+      });
+      return { setVariableResult: result };
+    });
+
+    // ── TriggerMessage (2.x) ──
+    this.client.handle("TriggerMessage", (ctx) => {
+      const payload = ctx.params as {
+        requestedMessage: string;
+        evse?: { id: number };
+      };
+      const s = useEmulatorStore.getState();
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "TriggerMessage",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const evseId = payload.evse?.id ?? 1;
+      setTimeout(() => {
+        const msg = payload.requestedMessage;
+        if (msg === "Heartbeat") this.sendHeartbeat();
+        else if (msg === "BootNotification") this.sendBootNotification201();
+        else if (msg === "StatusNotification") {
+          const ev = useEmulatorStore
+            .getState()
+            .chargers.find((c) => c.id === cid)
+            ?.runtime.evse.find((e) => e.evseId === evseId);
+          this.sendStatusNotification201(evseId, 1, ev?.status ?? "Available");
+        } else if (msg === "MeterValues") this.sendMeterValues(evseId);
+      }, 300);
+      return { status: "Accepted" };
+    });
+
+    // ── RemoteStartTransaction (2.x → use TransactionEvent) ──
+    // OCPP 2.0.1 renamed these to Request(Start|Stop)Transaction. Register
+    // the spec names, and keep the 1.6 names as aliases so a lenient or
+    // mislabelled CSMS still gets a response instead of NotImplemented.
+    const handleRequestStart: CallHandler = (ctx) => {
+      const payload = ctx.params as unknown as {
+        evseId?: number;
+        idToken: { idToken: string; type: string };
+      };
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers.find((c) => c.id === cid);
+      const evseId = payload.evseId ?? 1;
+      s.addLog(cid, {
+        direction: "Rx",
+        action: ctx.method,
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      if (!slot?.runtime.connectors[evseId]) return { status: "Rejected" };
+      if (!this.claimForStart(evseId)) return { status: "Rejected" };
+      setTimeout(
+        () => this.startTransaction201(evseId, payload.idToken.idToken),
+        500,
+      );
+      return { status: "Accepted" };
+    };
+    this.client.handle("RequestStartTransaction", handleRequestStart);
+    this.client.handle("RemoteStartTransaction", handleRequestStart);
+
+    // ── RemoteStopTransaction (2.x) ──
+    const handleRequestStop: CallHandler = (ctx) => {
+      const payload = ctx.params as unknown as { transactionId: string };
+      const s = useEmulatorStore.getState();
+      s.addLog(cid, {
+        direction: "Rx",
+        action: ctx.method,
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const evseId = this.resolveTransaction(payload.transactionId);
+      if (evseId === null) return { status: "Rejected" };
+      if (this.phaseOf(evseId) === "starting") {
+        this.deferredStops.set(evseId, "Remote");
+        return { status: "Accepted" };
+      }
+      setTimeout(() => this.stopTransaction201(evseId, "Remote"), 500);
+      return { status: "Accepted" };
+    };
+    this.client.handle("RequestStopTransaction", handleRequestStop);
+    this.client.handle("RemoteStopTransaction", handleRequestStop);
+
+    // ── ClearCache ──
+    this.client.handle("ClearCache", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "ClearCache",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── SetChargingProfile ──
+    this.client.handle("SetChargingProfile", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "SetChargingProfile",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── ClearChargingProfile ──
+    this.client.handle("ClearChargingProfile", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "ClearChargingProfile",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── GetChargingProfiles ──
+    this.client.handle("GetChargingProfiles", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "GetChargingProfiles",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "NoProfiles" };
+    });
+
+    // ── ReserveNow (2.x evseId-based) ──
+    this.client.handle("ReserveNow", (ctx) => {
+      const payload = ctx.params as {
+        id: number;
+        evseId?: number;
+        idToken: { idToken: string; type: string };
+        expiryDateTime: string;
+      };
+      const s = useEmulatorStore.getState();
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "ReserveNow",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const evseId = payload.evseId ?? 1;
+      s.updateEVSE(cid, evseId, { status: "Reserved" });
+      return { status: "Accepted" };
+    });
+
+    // ── CancelReservation ──
+    this.client.handle("CancelReservation", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "CancelReservation",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── SendLocalList ──
+    this.client.handle("SendLocalList", (ctx) => {
+      const payload = ctx.params as {
+        versionNumber: number;
+        localAuthorizationList?: {
+          idToken: { idToken: string };
+          idTokenInfo?: { status: string };
+        }[];
+        updateType: string;
+      };
+      const s = useEmulatorStore.getState();
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "SendLocalList",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      const list =
+        payload.localAuthorizationList?.map((e) => ({
+          idTag: e.idToken.idToken,
+          idTagInfo: e.idTokenInfo
+            ? {
+                status: (e.idTokenInfo.status ?? "Accepted") as "Accepted",
+              }
+            : undefined,
+        })) ?? [];
+      s.setLocalAuthList(cid, list, payload.versionNumber);
+      return { status: "Accepted" };
+    });
+
+    // ── GetLocalListVersion ──
+    this.client.handle("GetLocalListVersion", (ctx) => {
+      const s = useEmulatorStore.getState();
+      const slot = s.chargers.find((c) => c.id === cid);
+      s.addLog(cid, {
+        direction: "Rx",
+        action: "GetLocalListVersion",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { versionNumber: slot?.runtime.localAuthListVersion ?? 0 };
+    });
+
+    // ── UnlockConnector ──
+    this.client.handle("UnlockConnector", (ctx) => {
+      const payload = ctx.params as {
+        evseId: number;
+        connectorId: number;
+      };
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "UnlockConnector",
+        payload,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Unlocked" };
+    });
+
+    // ── DataTransfer ──
+    this.client.handle("DataTransfer", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "DataTransfer",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── GetLog ──
+    this.client.handle("GetLog", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "GetLog",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted", filename: "emulator-log.txt" };
+    });
+
+    // ── InstallCertificate (simulated) ──
+    this.client.handle("InstallCertificate", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "InstallCertificate",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── DeleteCertificate (simulated) ──
+    this.client.handle("DeleteCertificate", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "DeleteCertificate",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── GetInstalledCertificateIds (simulated) ──
+    this.client.handle("GetInstalledCertificateIds", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "GetInstalledCertificateIds",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted", certificateHashDataChain: [] };
+    });
+
+    // ── CertificateSigned (simulated) ──
+    this.client.handle("CertificateSigned", (ctx) => {
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "CertificateSigned",
+        payload: ctx.params,
+        ocppMessageId: ctx.messageId,
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── CostUpdated ──
+    this.client.handle("CostUpdated", (ctx) => {
+      const params = ctx.params as { totalCost: number };
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "CostUpdated",
+        payload: params,
+        ocppMessageId: ctx.messageId,
+      });
+      useEmulatorStore.getState().setCostInfo(cid, {
+        totalCost: params.totalCost,
+        currency: "USD",
+        message: "Session cost updated",
+      });
+      return {};
+    });
+
+    // ── DisplayMessage ──
+    this.client.handle("DisplayMessage", (ctx) => {
+      const params = ctx.params as {
+        id?: number;
+        priority?: string;
+        message?: { content?: string };
+      };
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "DisplayMessage",
+        payload: params,
+        ocppMessageId: ctx.messageId,
+      });
+      useEmulatorStore.getState().addDisplayMessage(cid, {
+        id: params.id || Date.now(),
+        priority: params.priority || "Normal",
+        message: params.message?.content || JSON.stringify(params.message),
+        timestamp: Date.now(),
+      });
+      return { status: "Accepted" };
+    });
+
+    // ── ClearDisplayMessage ──
+    this.client.handle("ClearDisplayMessage", (ctx) => {
+      const params = ctx.params as { id: number };
+      useEmulatorStore.getState().addLog(cid, {
+        direction: "Rx",
+        action: "ClearDisplayMessage",
+        payload: params,
+        ocppMessageId: ctx.messageId,
+      });
+      useEmulatorStore.getState().clearDisplayMessage(cid, params.id);
+      return { status: "Accepted" };
+    });
+  }
+
+  // ─── OCPP 2.x Outgoing Methods ────────────────────────────────────────────
+
+  async sendBootNotification201() {
+    if (!this.client) return;
+    const { slot, store } = getSlotState(this.chargerId);
+    const boot = slot.config.bootNotification;
+    const payload = {
+      reason: "PowerUp",
+      chargingStation: {
+        model: boot.chargePointModel,
+        vendorName: boot.chargePointVendor,
+        serialNumber: boot.chargePointSerialNumber || undefined,
+        firmwareVersion: boot.firmwareVersion || undefined,
+        modem:
+          boot.iccid || boot.imsi
+            ? {
+                iccid: boot.iccid || undefined,
+                imsi: boot.imsi || undefined,
+              }
+            : undefined,
+      },
+    };
+
+    try {
+      if (slot.config.vendorConfig?.customDataStr) {
+        const parsed = JSON.parse(slot.config.vendorConfig.customDataStr);
+        if (Object.keys(parsed).length > 0) {
+          (payload as any).customData = {
+            vendorId: slot.config.vendorConfig.vendorId,
+            ...parsed,
+          };
+        }
+      }
+    } catch (_) {}
+    const msgId = nanoid(8);
+    store.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "BootNotification",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = (await this.sendCall("BootNotification", payload)) as {
+        status: string;
+        currentTime: string;
+        interval?: number;
+      };
+      store.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "BootNotificationConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+      if (res.status === "Accepted") {
+        const interval = res.interval ?? 300;
+        store.setDeviceVariable(
+          this.chargerId,
+          "HeartbeatInterval",
+          "Interval",
+          String(interval),
+        );
+        this.startHeartbeatTimer(interval);
+        // Send StatusNotification for each EVSE
+        const evse =
+          useEmulatorStore
+            .getState()
+            .chargers.find((c) => c.id === this.chargerId)?.runtime.evse ?? [];
+        for (const e of evse) {
+          for (const conn of e.connectors) {
+            this.sendStatusNotification201(
+              e.evseId,
+              conn.connectorId,
+              e.status,
+            );
+          }
+        }
+      }
+    } catch (err) {
+      store.addLog(this.chargerId, {
+        direction: "Error",
+        action: "BootNotification",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+    }
+  }
+
+  async sendTransactionEvent(
+    trigger: "Started" | "Updated" | "Ended",
+    evseId: number,
+    reason?: string,
+    meterValue?: number,
+  ) {
+    if (!this.client) return;
+    const { slot, store } = getSlotState(this.chargerId);
+    const connector = slot.runtime.connectors[evseId];
+    const seq = store.bumpTransactionSeq(this.chargerId);
+    const ts = new Date().toISOString();
+    const payload: Record<string, unknown> = {
+      eventType: trigger,
+      seqNo: seq,
+      timestamp: ts,
+      triggerReason:
+        reason ??
+        (trigger === "Started"
+          ? "Authorized"
+          : trigger === "Ended"
+            ? "Local"
+            : "ChargingRateChanged"),
+      transactionInfo: {
+        transactionId: this.transactionIdFor(evseId),
+        chargingState:
+          trigger === "Ended"
+            ? "SuspendedEVSE"
+            : trigger === "Started"
+              ? "Charging"
+              : "Charging",
+      },
+      evse: { id: evseId, connectorId: 1 },
+      idToken: connector?.idTag
+        ? { idToken: connector.idTag, type: "ISO14443" }
+        : undefined,
+    };
+    if (meterValue !== undefined) {
+      payload.meterValue = [
+        {
+          timestamp: ts,
+          sampledValue: [
+            {
+              value: meterValue,
+              measurand: "Energy.Active.Import.Register",
+              unitOfMeasure: { unit: "Wh" },
+            },
+          ],
+        },
+      ];
+    }
+    const msgId = nanoid(8);
+    store.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "TransactionEvent",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = await this.sendCall("TransactionEvent", payload);
+      store.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "TransactionEventConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+    } catch (err) {
+      store.addLog(this.chargerId, {
+        direction: "Error",
+        action: "TransactionEvent",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+    }
+  }
+
+  async sendStatusNotification201(
+    evseId: number,
+    connectorId: number,
+    status: string,
+  ) {
+    if (!this.client) return;
+    const { store } = getSlotState(this.chargerId);
+    const payload = {
+      timestamp: new Date().toISOString(),
+      connectorStatus: status,
+      evseId,
+      connectorId,
+    };
+
+    const { vendorConfig } = store.getSlot(this.chargerId)?.config ?? {};
+    if (vendorConfig?.vendorErrorCode) {
+      (payload as any).vendorErrorCode = vendorConfig.vendorErrorCode;
+    }
+    const msgId = nanoid(8);
+    store.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "StatusNotification",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      await this.sendCall("StatusNotification", payload);
+    } catch (err) {
+      store.addLog(this.chargerId, {
+        direction: "Error",
+        action: "StatusNotification",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+    }
+  }
+
+  async sendAuthorize201(idToken: string, type = "ISO14443") {
+    if (!this.client) return;
+    const { store } = getSlotState(this.chargerId);
+    const payload = { idToken: { idToken, type } };
+    const msgId = nanoid(8);
+    store.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "Authorize",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = await this.sendCall("Authorize", payload);
+      store.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "AuthorizeConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+      return res;
+    } catch (err) {
+      store.addLog(this.chargerId, {
+        direction: "Error",
+        action: "Authorize",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+      return { idTokenInfo: { status: "Invalid" } };
+    }
+  }
+
+  async startTransaction201(evseId: number, idTag: string) {
+    if (!this.client) return;
+    const { store } = getSlotState(this.chargerId);
+    const preClaimed = this.phaseOf(evseId) === "starting";
+    if (!preClaimed && !this.claimForStart(evseId)) {
+      store.addLog(this.chargerId, {
+        direction: "System",
+        action: "StartTransactionSkipped",
+        payload: {
+          evseId,
+          message: `EVSE busy (${this.phaseOf(evseId)})`,
+        },
+      });
+      return;
+    }
+    const txId = Date.now();
+    store.updateConnector(this.chargerId, evseId, {
+      inTransaction: true,
+      transactionId: txId,
+      idTag,
+      startMeterValue:
+        store.getSlot(this.chargerId)?.runtime.connectors[evseId]
+          ?.currentMeterValue ?? 0,
+    });
+    this.registerTransaction(evseId, txId);
+    store.updateEVSE(this.chargerId, evseId, { status: "Occupied" });
+    this.sendStatusNotification201(evseId, 1, "Occupied");
+    await this.sendTransactionEvent("Started", evseId, "Authorized");
+    this.startMeterLoop(evseId);
+    const deferred = this.deferredStops.get(evseId);
+    if (deferred) {
+      this.deferredStops.delete(evseId);
+      await this.stopTransaction201(evseId, deferred);
+    }
+  }
+
+  async stopTransaction201(evseId: number, reason = "Local") {
+    if (!this.client) return;
+    const { store } = getSlotState(this.chargerId);
+    const snap = store.getSlot(this.chargerId)?.runtime.connectors[evseId];
+    if (!snap?.inTransaction) {
+      if (this.phaseOf(evseId) === "starting") {
+        this.deferredStops.set(evseId, reason);
+        return;
+      }
+      this.clearMeterTimer(evseId);
+      this.forgetTransaction(evseId);
+      return;
+    }
+    if (this.phaseOf(evseId) === "stopping") return;
+    this.txPhase[evseId] = "stopping";
+    // Stop metering before the closing event so the final meter value is
+    // the one reported in TransactionEvent(Ended).
+    this.clearMeterTimer(evseId);
+    const transactionId = snap.transactionId;
+    await this.sendTransactionEvent(
+      "Ended",
+      evseId,
+      reason,
+      roundWh(snap.currentMeterValue),
+    );
+    store.updateConnector(this.chargerId, evseId, {
+      inTransaction: false,
+      transactionId: null,
+      startMeterValue: snap.currentMeterValue,
+    });
+    this.forgetTransaction(evseId, transactionId);
+    store.updateEVSE(this.chargerId, evseId, { status: "Available" });
+    this.sendStatusNotification201(evseId, 1, "Available");
+  }
+
+  // ─── Outgoing Commands ─────────────────────────────────────────────────────
+
+  async sendBootNotification() {
+    if (!this.client) return;
+    const { slot, store } = getSlotState(this.chargerId);
+    const payload = { ...slot.config.bootNotification };
+    const msgId = nanoid(8);
+    store.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "BootNotification",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = (await this.sendCall("BootNotification", payload)) as {
+        status: string;
+        interval?: number;
+      };
+      store.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "BootNotificationConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+      if (res.status === "Accepted") {
+        const interval = res.interval ?? 300;
+        store.updateStationConfigKey(
+          this.chargerId,
+          "HeartbeatInterval",
+          String(interval),
+        );
+        this.startHeartbeatTimer(interval);
+        const n =
+          useEmulatorStore
+            .getState()
+            .chargers.find((c) => c.id === this.chargerId)?.config
+            .numberOfConnectors ?? 1;
+        this.flushOfflineQueue();
+        const resumed = new Set(this.activeConnectorIds());
+        for (let i = 1; i <= n; i++)
+          if (!resumed.has(i)) this.sendStatusNotification(i, "Available");
+        this.resumeActiveTransactions();
+      }
+    } catch (err) {
+      store.addLog(this.chargerId, {
+        direction: "Error",
+        action: "BootNotification",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+    }
+  }
+
+  /**
+   * Re-announce and re-arm any transaction that was running before the socket
+   * dropped. A charge point that reconnects mid-session is still charging, so
+   * the CSMS must see Charging again and keep receiving meter values — and a
+   * RemoteStop for that transaction has to keep working.
+   */
+  private resumeActiveTransactions() {
+    const slot = useEmulatorStore
+      .getState()
+      .chargers.find((c) => c.id === this.chargerId);
+    if (!slot) return;
+    for (const conn of Object.values(slot.runtime.connectors)) {
+      if (!conn?.inTransaction) continue;
+      this.registerTransaction(conn.connectorId, conn.transactionId);
+      useEmulatorStore.getState().addLog(this.chargerId, {
+        direction: "System",
+        action: "TransactionResumed",
+        payload: {
+          connectorId: conn.connectorId,
+          transactionId: conn.transactionId,
+          meterValue: conn.currentMeterValue,
+        },
+      });
+      this.sendStatusNotification(conn.connectorId, "Charging");
+      this.startMeterLoop(conn.connectorId);
+    }
+  }
+
+  private startHeartbeatTimer(intervalSeconds: number) {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = setInterval(
+      () => this.sendHeartbeat(),
+      intervalSeconds * 1000,
+    );
+  }
+
+  async sendHeartbeat() {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    const msgId = nanoid(8);
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "Heartbeat",
+      payload: {},
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = await this.sendCall("Heartbeat", {});
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "HeartbeatConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action: "Heartbeat",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+    }
+  }
+
+  /**
+   * OCPP 1.6 connector status -> 2.0.1 ConnectorStatusEnumType, which only
+   * has Available | Occupied | Reserved | Unavailable | Faulted.
+   */
+  private static readonly STATUS_16_TO_201: Record<string, string> = {
+    Available: "Available",
+    Preparing: "Occupied",
+    Charging: "Occupied",
+    SuspendedEV: "Occupied",
+    SuspendedEVSE: "Occupied",
+    Finishing: "Occupied",
+    Reserved: "Reserved",
+    Unavailable: "Unavailable",
+    Faulted: "Faulted",
+  };
+
+  async sendStatusNotification(
+    connectorId: number,
+    status: string,
+    errorCode: string = "NoError",
+  ) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+
+    // Callers (UI buttons, scenario steps) should not have to know which
+    // protocol version is configured. On 2.x the payload shape differs
+    // entirely, and sending the 1.6 shape gets rejected by a validating
+    // CSMS — which looks like "the status notification never fired".
+    const version = s.getSlot(this.chargerId)?.config.ocppVersion;
+    if (version && version !== "ocpp1.6") {
+      s.updateConnector(this.chargerId, connectorId, {
+        status: status as statusType,
+      });
+      await this.sendStatusNotification201(
+        connectorId,
+        1,
+        OCPPService.STATUS_16_TO_201[status] ?? "Available",
+      );
+      return;
+    }
+    const vendorError = s.getSlot(this.chargerId)?.config.vendorConfig
+      ?.vendorErrorCode;
+
+    const payload = {
+      connectorId,
+      errorCode: vendorError || errorCode,
+      status,
+      timestamp: new Date().toISOString(),
+    };
+    const msgId = nanoid(8);
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "StatusNotification",
+      payload,
+      ocppMessageId: msgId,
+    });
+    s.updateConnector(this.chargerId, connectorId, {
+      status: status as statusType,
+    });
+    try {
+      const res = await this.sendCall("StatusNotification", payload);
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "StatusNotificationConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action: "StatusNotification",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+    }
+  }
+
+  async authorize(_connectorId: number, idTag: string): Promise<boolean> {
+    if (!this.client) return false;
+    const s = useEmulatorStore.getState();
+    const msgId = nanoid(8);
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "Authorize",
+      payload: { idTag },
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = (await this.sendCall("Authorize", { idTag })) as {
+        idTagInfo: { status: string };
+      };
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "AuthorizeConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+      return res?.idTagInfo?.status === "Accepted";
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action: "Authorize",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+      return false;
+    }
+  }
+
+  async startTransaction(connectorId: number, idTag?: string) {
+    if (!this.client) {
+      // Claimed by RemoteStartTransaction, then the socket went away
+      // before the delayed start fired — do not strand the connector.
+      this.releaseConnector(connectorId);
+      this.deferredStops.delete(connectorId);
+      return;
+    }
+    const { slot, store } = getSlotState(this.chargerId);
+    const connector = slot.runtime.connectors[connectorId];
+    if (!connector) return;
+    // Direct callers (UI button, scenario runner) have not claimed the
+    // connector yet; RemoteStartTransaction has. Either way exactly one
+    // start may be in flight per connector.
+    const preClaimed = this.phaseOf(connectorId) === "starting";
+    if (!preClaimed && !this.claimForStart(connectorId)) {
+      store.addLog(this.chargerId, {
+        direction: "System",
+        action: "StartTransactionSkipped",
+        payload: {
+          connectorId,
+          message: `Connector busy (${this.phaseOf(connectorId)})`,
+        },
+      });
+      return;
+    }
+    const tag = idTag ?? connector.idTag;
+    const authorized = await this.authorize(connectorId, tag);
+    if (!authorized) {
+      store.addLog(this.chargerId, {
+        direction: "System",
+        action: "AuthFailed",
+        payload: { message: "Authorization rejected" },
+        ocppMessageId: nanoid(8),
+      });
+      this.releaseConnector(connectorId);
+      this.deferredStops.delete(connectorId);
+      await this.sendStatusNotification(connectorId, "Available");
+      return;
+    }
+    await this.sendStatusNotification(connectorId, "Preparing");
+    const freshSlot = useEmulatorStore
+      .getState()
+      ?.chargers.find((c) => c.id === this.chargerId);
+    if (!freshSlot) {
+      this.releaseConnector(connectorId);
+      return;
+    }
+    const payload = {
+      connectorId,
+      idTag: tag,
+      // The register as it stands now: it carries over from the last
+      // session, and a value set by hand while idle must be honoured.
+      meterStart: Math.round(
+        freshSlot.runtime.connectors[connectorId].currentMeterValue,
+      ),
+      timestamp: new Date().toISOString(),
+    };
+    const txMsgId = nanoid(8);
+    store.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "StartTransaction",
+      payload,
+      ocppMessageId: txMsgId,
+    });
+    try {
+      const res = (await this.sendCall("StartTransaction", payload)) as {
+        idTagInfo: { status: string };
+        transactionId: number;
+      };
+      store.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "StartTransactionConf",
+        payload: res,
+        ocppMessageId: txMsgId,
+      });
+      if (res?.idTagInfo?.status === "Accepted") {
+        store.updateConnector(this.chargerId, connectorId, {
+          inTransaction: true,
+          transactionId: res.transactionId,
+          idTag: tag,
+          startMeterValue: payload.meterStart,
+          // Charging consumes any reservation held on this connector.
+          reservation: null,
+        });
+        this.clearReservationTimer(connectorId);
+        this.registerTransaction(connectorId, res.transactionId);
+        await this.sendStatusNotification(connectorId, "Charging");
+        this.startMeterLoop(connectorId);
+        // A RemoteStop that arrived while we were still starting.
+        const deferred = this.deferredStops.get(connectorId);
+        if (deferred) {
+          this.deferredStops.delete(connectorId);
+          await this.stopTransaction(connectorId, deferred);
+        }
+      } else {
+        this.releaseConnector(connectorId);
+        this.deferredStops.delete(connectorId);
+        await this.sendStatusNotification(connectorId, "Available");
+      }
+    } catch (err) {
+      store.addLog(this.chargerId, {
+        direction: "Error",
+        action: "StartTransaction",
+        payload: { message: String(err) },
+        ocppMessageId: txMsgId,
+      });
+      // The call never completed, so no transaction exists on either
+      // side. Free the connector instead of wedging it in "Preparing".
+      this.releaseConnector(connectorId);
+      this.deferredStops.delete(connectorId);
+      await this.sendStatusNotification(connectorId, "Available");
+    }
+  }
+
+  /**
+   * Drives the periodic meter tick + MeterValues for an active transaction.
+   * Safe to call on resume: any previous interval is cleared first.
+   */
+  private startMeterLoop(connectorId: number) {
+    const cfgSlot = useEmulatorStore
+      .getState()
+      ?.chargers.find((c) => c.id === this.chargerId);
+    if (!cfgSlot) return;
+    const meterInterval = Math.max(
+      1,
+      parseInt(
+        cfgSlot.config.stationConfig.find(
+          (k: StationConfigKey) => k.key === "MeterValueSampleInterval",
+        )?.value ?? "60",
+        10,
+      ) || 60,
+    );
+    const increment =
+      cfgSlot.config.simulation.autoChargeMeterIncrement /
+      Math.max(1, meterInterval / 10);
+
+    this.setMeterTimer(
+      connectorId,
+      setInterval(() => {
+        const s = useEmulatorStore.getState();
+        const current = s.chargers.find((c) => c.id === this.chargerId)?.runtime
+          .connectors[connectorId];
+        // The transaction ended by some other path — stop ticking.
+        if (!current?.inTransaction) {
+          this.clearMeterTimer(connectorId);
+          return;
+        }
+        // Auto-charge advances the meter on its own tick; adding here as
+        // well would count the same energy twice.
+        if (!this.autoChargeTimers[connectorId]) {
+          s.updateConnector(this.chargerId, connectorId, {
+            currentMeterValue: roundWh(current.currentMeterValue + increment),
+          });
+        }
+        this.sendMeterValues(connectorId);
+      }, meterInterval * 1000),
+    );
+  }
+
+  async sendMeterValues(connectorId: number) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    const slot = s.chargers?.find((c) => c.id === this.chargerId);
+    if (!slot) return;
+    const connector = slot.runtime.connectors[connectorId];
+    if (!connector?.inTransaction) return;
+
+    const m = slot.config.simulation.measurands;
+    const meterWh = roundWh(connector.currentMeterValue);
+    const socPct = sessionSocPct(connector, slot.config.simulation);
+    const powerW = 3000 + Math.floor(Math.random() * 2000);
+    const voltV = 228 + Math.round(Math.random() * 4);
+    const ampA = +(powerW / voltV).toFixed(1);
+    const phases = m.threePhase ? ["L1", "L2", "L3"] : ["L1"];
+
+    const sampledValues: Record<string, unknown>[] = [];
+
+    if (m.energy)
+      sampledValues.push({
+        measurand: "Energy.Active.Import.Register",
+        value: String(meterWh),
+        unit: "Wh",
+      });
+
+    if (m.power)
+      sampledValues.push({
+        measurand: "Power.Active.Import",
+        value: String(powerW),
+        unit: "W",
+      });
+
+    if (m.voltage)
+      phases.forEach((phase) => {
+        sampledValues.push({
+          measurand: "Voltage",
+          phase,
+          value: String(voltV),
+          unit: "V",
+        });
+      });
+
+    if (m.current)
+      phases.forEach((phase) => {
+        sampledValues.push({
+          measurand: "Current.Import",
+          phase,
+          value: String(ampA),
+          unit: "A",
+        });
+      });
+
+    if (m.soc)
+      sampledValues.push({
+        measurand: "SoC",
+        value: socPct.toFixed(1),
+        unit: "Percent",
+        location: "EV",
+      });
+
+    if (m.temperature)
+      sampledValues.push({
+        measurand: "Temperature",
+        value: String(25 + Math.floor(Math.random() * 10)),
+        unit: "Celsius",
+        location: "Body",
+      });
+
+    if (m.frequency)
+      sampledValues.push({
+        measurand: "Frequency",
+        value: String((50 + (Math.random() - 0.5) * 0.2).toFixed(2)),
+        unit: "Hz",
+      });
+
+    const payload = {
+      connectorId,
+      transactionId: connector.transactionId,
+      meterValue: [
+        {
+          timestamp: new Date().toISOString(),
+          sampledValue: sampledValues,
+        },
+      ],
+    };
+
+    const msgId = nanoid(8);
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "MeterValues",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = await this.sendCall("MeterValues", payload);
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "MeterValuesConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action: "MeterValues",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+    }
+  }
+
+  async stopTransaction(connectorId: number, reason?: string) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    const slot = s.chargers?.find((c) => c.id === this.chargerId);
+    if (!slot) return;
+    const connector = slot.runtime.connectors[connectorId];
+    if (!connector?.inTransaction) {
+      if (this.phaseOf(connectorId) === "starting") {
+        // A start is in flight. Queue the stop so the transaction is
+        // closed as soon as it exists instead of being orphaned.
+        this.deferredStops.set(connectorId, reason ?? "Local");
+        return;
+      }
+      // Nothing to stop; make sure no stale bookkeeping survives.
+      this.clearMeterTimer(connectorId);
+      this.forgetTransaction(connectorId);
+      return;
+    }
+    if (this.phaseOf(connectorId) === "stopping") return;
+    this.txPhase[connectorId] = "stopping";
+    this.clearMeterTimer(connectorId);
+    await this.sendStatusNotification(connectorId, "Finishing");
+
+    // Read the meter back after the status round-trip so the final value is
+    // the one the connector actually holds, not a pre-await snapshot.
+    const fresh =
+      useEmulatorStore.getState().chargers.find((c) => c.id === this.chargerId)
+        ?.runtime.connectors[connectorId] ?? connector;
+    const transactionId = fresh.transactionId ?? connector.transactionId;
+    const meterStop = Math.round(fresh.currentMeterValue);
+    const payload = {
+      transactionId,
+      idTag: fresh.idTag,
+      meterStop,
+      timestamp: new Date().toISOString(),
+      reason: reason ?? fresh.stopReason,
+    };
+    const msgId = nanoid(8);
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "StopTransaction",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = await this.sendCall("StopTransaction", payload);
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "StopTransactionConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+      useEmulatorStore.getState().updateConnector(this.chargerId, connectorId, {
+        inTransaction: false,
+        transactionId: null,
+        startMeterValue: fresh.currentMeterValue,
+        stopReason: (reason ?? fresh.stopReason) as typeof fresh.stopReason,
+      });
+      this.forgetTransaction(connectorId, transactionId);
+      await this.sendStatusNotification(connectorId, "Available");
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action: "StopTransaction",
+        payload: { message: String(err) },
+        ocppMessageId: msgId,
+      });
+      // The CSMS never acknowledged the stop, so the transaction is still
+      // open on its side. Keep ours open too and go back to "active" so a
+      // retry can go through instead of leaving a connector that reports
+      // charging but can never be stopped.
+      this.txPhase[connectorId] = "active";
+      await this.sendStatusNotification(connectorId, "Charging");
+    }
+  }
+
+  async sendDiagnosticsStatus(status: string) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    const payload = { status };
+    const msgId = nanoid(8);
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "DiagnosticsStatusNotification",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = await this.sendCall("DiagnosticsStatusNotification", payload);
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "DiagnosticsStatusNotificationConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+    } catch (_) {}
+  }
+
+  /**
+   * Runs the simulated firmware lifecycle.
+   *
+   * Steps are tracked so the sequence can be cancelled: a disconnect clears
+   * them (otherwise stale steps surface on the next session), and a second
+   * UpdateFirmware replaces the first instead of interleaving with it.
+   */
+  private runFirmwareSequence(
+    steps: { status: string; delay: number }[],
+    startDelayMs = 0,
+  ) {
+    this.cancelFirmwareSequence();
+    let cumulative = startDelayMs;
+    for (const step of steps) {
+      cumulative += step.delay;
+      this.firmwareTimers.push(
+        setTimeout(async () => {
+          useEmulatorStore.getState().updateSimulation(this.chargerId, {
+            firmwareStatus: step.status,
+          });
+          // A station cannot charge through an install: it ends any
+          // running session and reports itself Unavailable until the
+          // new firmware is in place.
+          if (step.status === "Installing") await this.enterFirmwareInstall();
+          await this.sendFirmwareStatus(step.status);
+          if (step.status === "Installed") await this.exitFirmwareInstall();
+        }, cumulative),
+      );
+    }
+  }
+
+  private connectorCount() {
+    return (
+      useEmulatorStore.getState().getSlot(this.chargerId)?.config
+        .numberOfConnectors ?? 1
+    );
+  }
+
+  private async enterFirmwareInstall() {
+    for (const connId of this.activeConnectorIds()) {
+      useEmulatorStore.getState().updateConnector(this.chargerId, connId, {
+        stopReason: "Other",
+      });
+      await this.stopTransaction(connId, "Other");
+    }
+    for (let i = 1; i <= this.connectorCount(); i++) {
+      await this.sendStatusNotification(i, "Unavailable");
+    }
+  }
+
+  private async exitFirmwareInstall() {
+    for (let i = 1; i <= this.connectorCount(); i++) {
+      await this.sendStatusNotification(i, "Available");
+    }
+  }
+
+  private cancelFirmwareSequence() {
+    this.firmwareTimers.forEach(clearTimeout);
+    this.firmwareTimers = [];
+  }
+
+  async sendFirmwareStatus(status: string) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    const payload = { status };
+    const msgId = nanoid(8);
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "FirmwareStatusNotification",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = await this.sendCall("FirmwareStatusNotification", payload);
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "FirmwareStatusNotificationConf",
+        payload: res,
+        ocppMessageId: msgId,
+      });
+    } catch (_) {}
+  }
+
+  startDiagnosticsUpload() {
+    const s = useEmulatorStore.getState();
+    const slot = s.chargers?.find((c) => c.id === this.chargerId);
+    if (!slot) return;
+    if (this.uploadTimer) clearInterval(this.uploadTimer);
+    let secs = slot.config.simulation.diagnosticUploadTime;
+    s.setIsUploading(this.chargerId, true);
+    s.setUploadSecondsLeft(this.chargerId, secs);
+    this.sendDiagnosticsStatus("Uploading");
+    this.uploadTimer = setInterval(() => {
+      secs -= 1;
+      useEmulatorStore.getState().setUploadSecondsLeft(this.chargerId, secs);
+      if (secs <= 0) {
+        if (this.uploadTimer) clearInterval(this.uploadTimer);
+        this.uploadTimer = null;
+        useEmulatorStore.getState().setIsUploading(this.chargerId, false);
+        const diagStatus = useEmulatorStore
+          .getState()
+          .chargers.find((c) => c.id === this.chargerId)?.config
+          .simulation.diagnosticStatus;
+        this.sendDiagnosticsStatus(diagStatus ?? "Uploaded");
+      }
+    }, 1000);
+  }
+
+  // ─── DataTransfer (CP → CSMS) ─────────────────────────────────────────────
+  async sendDataTransfer(vendorId?: string, messageId?: string, data?: string) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    const config = s.getSlot(this.chargerId)?.config.vendorConfig;
+
+    const payload: { vendorId: string; messageId?: string; data?: string } = {
+      vendorId: vendorId || config?.vendorId || "UnknownVendor",
+    };
+    if (messageId) payload.messageId = messageId;
+
+    // Use explicitly passed data, OR fallback to vendorConfig custom data
+    if (data) {
+      payload.data = data;
+    } else if (config?.customDataStr) {
+      try {
+        JSON.parse(config.customDataStr);
+        payload.data = config.customDataStr;
+      } catch (_) {
+        payload.data = config.customDataStr;
+      }
+    }
+
+    const msgId = nanoid(8);
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "DataTransfer",
+      payload,
+      ocppMessageId: msgId,
+    });
+    try {
+      const res = await this.sendCall("DataTransfer", payload);
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "DataTransferConf",
+        payload: res,
+      });
+      return res;
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action: "DataTransfer",
+        payload: { message: String(err) },
+      });
+    }
+  }
+
+  // ─── SecurityEventNotification (CP → CSMS) ────────────────────────────────
+  async sendSecurityEventNotification(type: string, info?: string) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    const payload = {
+      type,
+      timestamp: new Date().toISOString(),
+      techInfo: info ?? "",
+    };
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "SecurityEventNotification",
+      payload,
+    });
+    try {
+      const res = await this.sendCall("SecurityEventNotification", payload);
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "SecurityEventNotificationConf",
+        payload: res,
+      });
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action: "SecurityEventNotification",
+        payload: { message: String(err) },
+      });
+    }
+  }
+
+  // ─── LogStatusNotification (CP → CSMS) ────────────────────────────────────
+  async sendLogStatusNotification(status: string, requestId?: number) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    const payload: Record<string, unknown> = { status };
+    if (requestId !== undefined) payload.requestId = requestId;
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "LogStatusNotification",
+      payload,
+    });
+    try {
+      const res = await this.sendCall("LogStatusNotification", payload);
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: "LogStatusNotificationConf",
+        payload: res,
+      });
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action: "LogStatusNotification",
+        payload: { message: String(err) },
+      });
+    }
+  }
+
+  // ─── Auto Charge State Machine ─────────────────────────────────────────────
+  async startAutoCharge(connectorId: number) {
+    if (!this.client) return;
+    const { slot, store } = getSlotState(this.chargerId);
+    const conn = slot.runtime.connectors[connectorId];
+    if (!conn || conn.inTransaction) return;
+
+    store.addLog(this.chargerId, {
+      direction: "System",
+      action: "AutoCharge",
+      payload: { connectorId, message: "Starting auto-charge sequence" },
+    });
+
+    await this.startTransaction(connectorId, conn.idTag);
+
+    const freshSlot = useEmulatorStore
+      .getState()
+      .chargers.find((c) => c.id === this.chargerId);
+    const updatedConn = freshSlot?.runtime.connectors[connectorId];
+    if (!updatedConn?.inTransaction) {
+      store.addLog(this.chargerId, {
+        direction: "System",
+        action: "AutoCharge",
+        payload: {
+          connectorId,
+          message: "Auto-charge failed: transaction not started",
+        },
+      });
+      return;
+    }
+
+    const {
+      autoChargeDurationSec,
+      autoChargeTargetKWh,
+      autoChargeMeterIncrement,
+    } = slot.config.simulation;
+    const meterInterval = parseInt(
+      slot.config.stationConfig.find(
+        (k) => k.key === "MeterValueSampleInterval",
+      )?.value ?? "60",
+      10,
+    );
+
+    let elapsed = 0;
+    const tickSec = Math.min(meterInterval, 10);
+    this.autoChargeTimers[connectorId] = setInterval(() => {
+      elapsed += tickSec;
+      const s = useEmulatorStore.getState();
+      const current = s.chargers.find((c) => c.id === this.chargerId)?.runtime
+        .connectors[connectorId];
+      if (!current?.inTransaction) {
+        if (this.autoChargeTimers[connectorId]) {
+          clearInterval(this.autoChargeTimers[connectorId]);
+          delete this.autoChargeTimers[connectorId];
+        }
+        return;
+      }
+      const newMeter = roundWh(
+        current.currentMeterValue + autoChargeMeterIncrement,
+      );
+      s.updateConnector(this.chargerId, connectorId, {
+        currentMeterValue: newMeter,
+      });
+      // The target is energy for this session; the register itself keeps
+      // counting across sessions.
+      const deliveredWh = newMeter - current.startMeterValue;
+      const targetWh = autoChargeTargetKWh * 1000;
+      if (deliveredWh >= targetWh || elapsed >= autoChargeDurationSec) {
+        if (this.autoChargeTimers[connectorId]) {
+          clearInterval(this.autoChargeTimers[connectorId]);
+          delete this.autoChargeTimers[connectorId];
+        }
+        this.sendMeterValues(connectorId);
+        setTimeout(() => {
+          useEmulatorStore
+            .getState()
+            .updateConnector(this.chargerId, connectorId, {
+              stopReason: "Local",
+            });
+          this.stopTransaction(connectorId);
+          useEmulatorStore.getState().addLog(this.chargerId, {
+            direction: "System",
+            action: "AutoCharge",
+            payload: {
+              connectorId,
+              message: `Auto-charge complete: ${(deliveredWh / 1000).toFixed(
+                1,
+              )} kWh in ${elapsed}s`,
+            },
+          });
+        }, 1000);
+      }
+    }, tickSec * 1000);
+  }
+
+  stopAutoCharge(connectorId: number) {
+    if (this.autoChargeTimers[connectorId]) {
+      clearInterval(this.autoChargeTimers[connectorId]);
+      delete this.autoChargeTimers[connectorId];
+    }
+    const slot = useEmulatorStore
+      .getState()
+      .chargers.find((c) => c.id === this.chargerId);
+    if (slot?.runtime.connectors[connectorId]?.inTransaction) {
+      this.stopTransaction(connectorId);
+    }
+  }
+
+  // ─── Raw OCPP Call (Message Composer) ──────────────────────────────────────
+  async sendRawCall(action: string, payload: Record<string, unknown>) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    s.addLog(this.chargerId, { direction: "Tx", action, payload });
+    try {
+      const res = await this.sendCall(action, payload);
+      s.addLog(this.chargerId, {
+        direction: "Rx",
+        action: `${action}Conf`,
+        payload: res,
+      });
+      return res;
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action,
+        payload: { message: String(err) },
+      });
+    }
+  }
+
+  // ─── Raw String Injection (Chaos Monkey) ─────────────────────────────────
+  sendRawString(raw: string) {
+    if (!this.client) return;
+    const s = useEmulatorStore.getState();
+    s.addLog(this.chargerId, {
+      direction: "Tx",
+      action: "RawInjection",
+      payload: { raw },
+    });
+    try {
+      // Access the underlying WebSocket and send the raw string directly
+      this.client.sendRaw(raw);
+    } catch (err) {
+      s.addLog(this.chargerId, {
+        direction: "Error",
+        action: "RawInjection",
+        payload: { message: String(err) },
+      });
+    }
+  }
+
+  // ─── Hardware Fault Injection ────────────────────────────────────────────
+  async triggerFault(connectorId: number, errorCode: string) {
+    const s = useEmulatorStore.getState();
+    const slot = s.chargers.find((c) => c.id === this.chargerId);
+    const connector = slot?.runtime.connectors[connectorId];
+
+    // If there's an active transaction, stop it with reason "Other"
+    if (connector?.inTransaction) {
+      s.updateConnector(this.chargerId, connectorId, {
+        stopReason: "Other",
+      });
+      await this.stopTransaction(connectorId);
+    }
+
+    // Set connector to Faulted
+    s.updateConnector(this.chargerId, connectorId, { status: "Faulted" });
+
+    // Send StatusNotification with the error code
+    const { config } = getSlotState(this.chargerId);
+    if (config.ocppVersion === "ocpp1.6") {
+      await this.sendStatusNotification(connectorId, "Faulted", errorCode);
+    } else {
+      // OCPP 2.x
+      if (this.client) {
+        const payload = {
+          timestamp: new Date().toISOString(),
+          connectorStatus: "Faulted",
+          evseId: connectorId,
+          connectorId: 1,
+        };
+        s.addLog(this.chargerId, {
+          direction: "Tx",
+          action: "StatusNotification",
+          payload: { ...payload, errorCode },
+        });
+        try {
+          const res = await this.sendCall("StatusNotification", payload);
+          s.addLog(this.chargerId, {
+            direction: "Rx",
+            action: "StatusNotificationConf",
+            payload: res,
+          });
+        } catch (err) {
+          s.addLog(this.chargerId, {
+            direction: "Error",
+            action: "StatusNotification",
+            payload: { message: String(err) },
+          });
+        }
+      }
+    }
+  }
+
+  // ─── Scenario Macros ────────────────────────────────────────────────────────
+
+  async runScenario(macroName: string, steps: ScenarioStep[]) {
+    const { store } = getSlotState(this.chargerId);
+    store.setScenarioState(this.chargerId, {
+      running: true,
+      currentStep: 0,
+      macroName,
+    });
+
+    for (let i = 0; i < steps.length; i++) {
+      // Check if we've been stopped mid-run
+      const state = store.getSlot(this.chargerId)?.runtime?.scenarioState;
+      if (!state?.running || state.macroName !== macroName) {
+        break; // aborted
+      }
+
+      store.setScenarioState(this.chargerId, { currentStep: i });
+      const step = steps[i];
+
+      // Delay
+      if (step.delayMs > 0) {
+        await new Promise((r) => setTimeout(r, step.delayMs));
+      }
+
+      // Execute action
+      const p = step.params || {};
+      const cid = Number(p.connectorId || 1);
+      const is2x =
+        store.getSlot(this.chargerId)?.config.ocppVersion === "ocpp2.0.1";
+
+      try {
+        const currentStatus = store.chargers.find(
+          (c) => c.id === this.chargerId,
+        )?.runtime.status;
+        if (currentStatus !== "connected") {
+          throw new Error(`WebSocket disconnected (Status: ${currentStatus})`);
+        }
+
+        switch (step.action) {
+          case "plugIn":
+            if (is2x) this.sendStatusNotification201(cid, 1, "Occupied");
+            else this.sendStatusNotification(cid, "Preparing");
+            store.updateConnector(this.chargerId, cid, {
+              cablePluggedIn: true,
+            });
+            break;
+
+          case "authorize": {
+            let authOk = false;
+            if (is2x) {
+              const res2 = (await this.sendAuthorize201(String(p.idTag))) as {
+                idTokenInfo?: { status: string };
+              };
+              authOk = res2 && res2?.idTokenInfo?.status === "Accepted";
+            } else {
+              authOk = await this.authorize(cid, String(p.idTag));
+            }
+            if (!authOk && p.idTag !== "INVALID_TAG") {
+              throw new Error("Authorization rejected by CSMS");
+            }
+            break;
+          }
+
+          case "startTransaction": {
+            if (is2x) await this.startTransaction201(cid, String(p.idTag));
+            else await this.startTransaction(cid, String(p.idTag));
+
+            const conn = useEmulatorStore
+              .getState()
+              .chargers.find((c) => c.id === this.chargerId)?.runtime
+              .connectors[cid];
+            if (!conn?.inTransaction) {
+              throw new Error("StartTransaction was rejected or failed");
+            }
+            break;
+          }
+
+          case "sendMeterValues":
+            await this.sendMeterValues(cid);
+            break;
+
+          case "stopTransaction":
+            if (is2x) await this.stopTransaction201(cid);
+            else await this.stopTransaction(cid);
+            break;
+
+          case "unplug":
+            if (is2x) this.sendStatusNotification201(cid, 1, "Available");
+            else this.sendStatusNotification(cid, "Available");
+            store.updateConnector(this.chargerId, cid, {
+              cablePluggedIn: false,
+            });
+            break;
+
+          case "sendStatus":
+            if (is2x) this.sendStatusNotification201(cid, 1, String(p.status));
+            else this.sendStatusNotification(cid, String(p.status));
+            break;
+
+          case "triggerFault":
+            if (is2x) this.sendStatusNotification201(cid, 1, "Faulted");
+            else
+              this.sendStatusNotification(
+                cid,
+                "Faulted",
+                String(p.errorCode || "InternalError"),
+              );
+            break;
+
+          case "wait":
+            // just a delay, handled above
+            break;
+        }
+      } catch (error) {
+        const err = Error.isError(error) ? error : new Error(String(error));
+        console.warn(`[Scenario] Step ${i} (${step.action}) failed:`, err);
+        store.addLog(this.chargerId, {
+          direction: "System",
+          action: "ScenarioError",
+          payload: {
+            step: i,
+            action: step.action,
+            error: err?.message || String(err),
+          },
+          ocppMessageId: "",
+        });
+      }
+    }
+
+    // Reset state when done
+    store.setScenarioState(this.chargerId, { running: false });
+  }
 }
 
 // ─── Service Map (one OCPPService per charger slot) ───────────────────────────
@@ -3367,16 +3245,16 @@ class OCPPService {
 const serviceMap = new Map<string, OCPPService>();
 
 export function getService(chargerId: string): OCPPService {
-	if (!serviceMap.has(chargerId)) {
-		serviceMap.set(chargerId, new OCPPService(chargerId));
-	}
-	// biome-ignore lint/style/noNonNullAssertion: this is a map of chargerId to OCPPService
-	return serviceMap.get(chargerId)!;
+  if (!serviceMap.has(chargerId)) {
+    serviceMap.set(chargerId, new OCPPService(chargerId));
+  }
+  // biome-ignore lint/style/noNonNullAssertion: this is a map of chargerId to OCPPService
+  return serviceMap.get(chargerId)!;
 }
 
 export function removeService(chargerId: string) {
-	serviceMap.get(chargerId)?.disconnect();
-	serviceMap.delete(chargerId);
+  serviceMap.get(chargerId)?.disconnect();
+  serviceMap.delete(chargerId);
 }
 
 /**
@@ -3384,18 +3262,18 @@ export function removeService(chargerId: string) {
  * Legacy export for components that haven't been updated yet.
  */
 export function getActiveService(): OCPPService {
-	const id = useEmulatorStore.getState().activeChargerId;
-	return getService(id);
+  const id = useEmulatorStore.getState().activeChargerId;
+  return getService(id);
 }
 
 // Legacy singleton alias — HeaderBar and ConnectorPanel do
 // import { ocppService } from "@/lib/ocppClient", so we export a proxy
 // object that always delegates to the currently active charger's service.
 export const ocppService = new Proxy({} as OCPPService, {
-	get(_target, prop) {
-		const id = useEmulatorStore.getState().activeChargerId;
-		const svc = getService(id);
-		const val = (svc as any)[prop];
-		return typeof val === "function" ? val.bind(svc) : val;
-	},
+  get(_target, prop) {
+    const id = useEmulatorStore.getState().activeChargerId;
+    const svc = getService(id);
+    const val = (svc as any)[prop];
+    return typeof val === "function" ? val.bind(svc) : val;
+  },
 });

@@ -106,7 +106,8 @@ function ConnectionTab() {
                   type="button"
                   className="text-[#a78bfa] hover:text-[#c4b5fd] hover:underline flex items-center gap-1 text-[10px] cursor-pointer"
                 >
-                  Browser permission guide <ExternalLink className="h-2.5 w-2.5" />
+                  Browser permission guide{" "}
+                  <ExternalLink className="h-2.5 w-2.5" />
                 </button>
               }
             />

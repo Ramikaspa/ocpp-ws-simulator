@@ -393,7 +393,8 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
           )}
           {inTx ? (
             <span className="flex items-center gap-1 text-[10px] font-mono text-[#c4b5fd] px-1.5 py-0.5 rounded bg-[#1e1535] border border-[#5b21b6] leading-none shrink-0">
-              <Zap className="h-2.5 w-2.5" /> TX:{connector.transactionId}
+              <Zap className="h-2.5 w-2.5" /> TX:
+              {connector.transactionId}
             </span>
           ) : connector.reservation ? (
             <span className="flex items-center gap-1 text-[10px] font-mono text-[#fcd34d] px-1.5 py-0.5 rounded bg-[#382b0e] border border-[#7a5a1a] leading-none shrink-0">
@@ -482,7 +483,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                   onChange={(e) =>
                     setCustomMeterStep(Number(e.target.value) || 0)
                   }
-                  className="h-7 max-w-[60px] text-center bg-[#121420] border-[#282b3a] font-mono text-[12px] text-white focus-visible:ring-1 focus-visible:ring-[#8b5cf6]"
+                  className="h-7 max-w-15 text-center bg-[#121420] border-[#282b3a] font-mono text-[12px] text-white focus-visible:ring-1 focus-visible:ring-[#8b5cf6]"
                 />
                 <button
                   onClick={() =>
@@ -515,8 +516,8 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 <Battery className="h-3 w-3" /> SoC {socPct.toFixed(1)}%
               </span>
               <span className="font-mono normal-case tracking-normal">
-                {sessionKWh.toFixed(2)} / {config.simulation.autoChargeTargetKWh}{" "}
-                kWh
+                {sessionKWh.toFixed(2)} /{" "}
+                {config.simulation.autoChargeTargetKWh} kWh
               </span>
             </div>
             <div
@@ -680,7 +681,9 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 <input
                   value={connector.idTag}
                   onChange={(e) =>
-                    updateConnector(connectorId, { idTag: e.target.value })
+                    updateConnector(connectorId, {
+                      idTag: e.target.value,
+                    })
                   }
                   className="w-full h-8 pl-8 pr-2 rounded-md text-[12px] font-mono text-white bg-[#121420] border border-[#232636] outline-none placeholder:text-[#383e50] focus:border-[#8b5cf6] focus:shadow-[0_0_0_2px_rgba(139,92,246,0.15)] transition-all"
                   placeholder="RFID Token"
@@ -922,7 +925,9 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                               <div className="flex-1 h-2.5 bg-[#0a0c14] rounded-full overflow-hidden">
                                 <div
                                   className="h-full bg-emerald-500/40 rounded-full transition-all"
-                                  style={{ width: `${pct}%` }}
+                                  style={{
+                                    width: `${pct}%`,
+                                  }}
                                 />
                               </div>
                               <span className="text-[8px] font-mono text-emerald-300 w-12 text-right shrink-0">
@@ -952,7 +957,9 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
               {connector.reservation && (
                 <button
                   onClick={() => {
-                    updateConnector(connectorId, { reservation: null });
+                    updateConnector(connectorId, {
+                      reservation: null,
+                    });
                     if (connector.status === "Reserved")
                       ocppService.sendStatusNotification(
                         connectorId,

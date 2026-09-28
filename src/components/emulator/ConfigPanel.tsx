@@ -175,8 +175,8 @@ function ReadOnlyBadge({ setMessage }: { setMessage: string }) {
         RO
       </TooltipTrigger>
       <TooltipContent className="max-w-60 text-[11px] leading-snug">
-        Read-only. Can't be edited here, and a {setMessage} from the CSMS
-        is answered with Rejected.
+        Read-only. Can't be edited here, and a {setMessage} from the CSMS is
+        answered with Rejected.
       </TooltipContent>
     </Tooltip>
   );
@@ -471,7 +471,8 @@ function ConnectionTab() {
                   type="button"
                   className="text-[#a78bfa] hover:text-[#c4b5fd] hover:underline flex items-center gap-1 text-[10px] cursor-pointer"
                 >
-                  Browser permission guide <ExternalLink className="h-2.5 w-2.5" />
+                  Browser permission guide{" "}
+                  <ExternalLink className="h-2.5 w-2.5" />
                 </button>
               }
             />
@@ -533,7 +534,9 @@ function ConnectionTab() {
                 { label: "2 Connectors", value: "2" },
               ]}
               onChange={(v) =>
-                updateConfig({ numberOfConnectors: Number(v) as 1 | 2 })
+                updateConfig({
+                  numberOfConnectors: Number(v) as 1 | 2,
+                })
               }
             />
           </Field>
@@ -556,10 +559,15 @@ function ConnectionTab() {
             disabled={locked}
             options={[
               { label: "0 — No Security", value: "0" },
-              { label: "1 — Basic Auth (password in URL)", value: "1" },
+              {
+                label: "1 — Basic Auth (password in URL)",
+                value: "1",
+              },
             ]}
             onChange={(v) =>
-              updateConfig({ securityProfile: Number(v) as 0 | 1 })
+              updateConfig({
+                securityProfile: Number(v) as 0 | 1,
+              })
             }
           />
         </Field>
@@ -573,7 +581,9 @@ function ConnectionTab() {
               value={config.basicAuthPassword}
               disabled={locked}
               onChange={(e) =>
-                updateConfig({ basicAuthPassword: e.target.value })
+                updateConfig({
+                  basicAuthPassword: e.target.value,
+                })
               }
               className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-rose-500/30"
               placeholder="Password..."
@@ -672,7 +682,9 @@ function VendorTab() {
                 value={(boot as any)[key] ?? ""}
                 disabled={locked}
                 onChange={(e) =>
-                  updateBootNotification({ [key]: e.target.value } as any)
+                  updateBootNotification({
+                    [key]: e.target.value,
+                  } as any)
                 }
                 className="h-9 bg-surface-inset border-b-default text-white text-[12px] font-mono rounded-lg focus-visible:ring-cyan-500/30"
               />
@@ -706,7 +718,9 @@ function VendorTab() {
             <textarea
               value={vendor?.customDataStr ?? "{}"}
               onChange={(e) =>
-                updateVendorConfig({ customDataStr: e.target.value })
+                updateVendorConfig({
+                  customDataStr: e.target.value,
+                })
               }
               className="w-full h-24 bg-white/3 border border-white/8 text-white text-[11px] font-mono rounded-lg p-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-indigo-500/30 resize-none custom-scrollbar"
               placeholder='{"customKey": "value"}'
@@ -745,7 +759,9 @@ function VendorTab() {
           <Input
             value={vendor?.vendorErrorCode ?? ""}
             onChange={(e) =>
-              updateVendorConfig({ vendorErrorCode: e.target.value })
+              updateVendorConfig({
+                vendorErrorCode: e.target.value,
+              })
             }
             className="h-9 bg-surface-inset border-b-default text-white text-[12px] font-mono rounded-lg focus-visible:ring-rose-500/30"
             placeholder="e.g. 0x01B (Optional)"
@@ -960,7 +976,9 @@ function SimulationTab() {
             <Input
               value={simulation.diagnosticFileName}
               onChange={(e) =>
-                updateSimulation({ diagnosticFileName: e.target.value })
+                updateSimulation({
+                  diagnosticFileName: e.target.value,
+                })
               }
               className="h-9 bg-surface-inset border-b-default text-white text-[12px] rounded-lg focus-visible:ring-pink-500/30"
             />
@@ -1164,7 +1182,9 @@ function SimulationTab() {
             step={500}
             value={simulation.responseDelayMs}
             onChange={(e) =>
-              updateSimulation({ responseDelayMs: Number(e.target.value) })
+              updateSimulation({
+                responseDelayMs: Number(e.target.value),
+              })
             }
             className="flex-1 accent-amber-500 h-1.5 cursor-pointer"
           />
@@ -1399,7 +1419,7 @@ function LocalAuthListTab() {
               <span>Expiry</span>
             </div>
             {/* Rows */}
-            <div className="divide-y divide-white/5 max-h-[400px] overflow-y-auto custom-scrollbar">
+            <div className="divide-y divide-white/5 max-h-100 overflow-y-auto custom-scrollbar">
               {filtered.map((entry) => {
                 const status = entry.idTagInfo?.status ?? "Unknown";
                 const expiry = entry.idTagInfo?.expiryDate;
@@ -1521,7 +1541,10 @@ function MessageComposerTab() {
             <div className="flex-1">
               <Dropdown
                 value={action}
-                options={OCPP_ACTIONS.map((a) => ({ label: a, value: a }))}
+                options={OCPP_ACTIONS.map((a) => ({
+                  label: a,
+                  value: a,
+                }))}
                 onChange={(v) => setAction(v)}
               />
             </div>
@@ -1614,7 +1637,11 @@ const getPrebuiltMacros = (rfidTag: string): ScenarioMacro[] => [
     description: "Plug in, send invalid RFID, unplug after failure",
     steps: [
       { action: "plugIn", delayMs: 500 },
-      { action: "authorize", params: { idTag: "INVALID_TAG" }, delayMs: 2000 },
+      {
+        action: "authorize",
+        params: { idTag: "INVALID_TAG" },
+        delayMs: 2000,
+      },
       { action: "unplug", delayMs: 1000 },
     ],
   },
@@ -1628,7 +1655,11 @@ const getPrebuiltMacros = (rfidTag: string): ScenarioMacro[] => [
         delayMs: 1000,
       },
       { action: "wait", delayMs: 5000 },
-      { action: "sendStatus", params: { status: "Available" }, delayMs: 500 },
+      {
+        action: "sendStatus",
+        params: { status: "Available" },
+        delayMs: 500,
+      },
     ],
   },
 ];
@@ -1698,7 +1729,7 @@ function MacroTab() {
             <h4 className="text-[10px] uppercase tracking-widest text-[#5d6577] mb-3">
               Scenario Steps
             </h4>
-            <div className="flex flex-col gap-1.5 max-h-[250px] overflow-y-auto custom-scrollbar">
+            <div className="flex flex-col gap-1.5 max-h-62.5 overflow-y-auto custom-scrollbar">
               {macroToDisplay.steps.map((step, idx) => {
                 const isActive = isRunning && scenario.currentStep === idx;
                 const isPast = isRunning && scenario.currentStep > idx;
