@@ -44,6 +44,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useActiveCharger } from "@/hooks/useActiveCharger";
 import { ocppService } from "@/lib/ocppClient";
+import type { BootNotificationConfig } from "@/store/emulatorStore";
 
 interface ConfigSheetProps {
   open: boolean;
@@ -138,7 +139,9 @@ function ConnectionTab() {
             <Select
               value={config.ocppVersion}
               disabled={disabled}
-              onValueChange={(v: any) => updateConfig({ ocppVersion: v })}
+              onValueChange={(v) =>
+                updateConfig({ ocppVersion: v || undefined })
+              }
             >
               <SelectTrigger className="glass-input text-white h-10">
                 <SelectValue />
@@ -188,7 +191,7 @@ function ConnectionTab() {
 
 /* ─────────────────────────────── BOOT NOTIFICATION ──────────────────────── */
 const BOOT_FIELDS: {
-  key: string;
+  key: keyof BootNotificationConfig;
   label: string;
   icon: React.ReactNode;
   required?: boolean;
@@ -240,7 +243,7 @@ const BOOT_FIELDS: {
     label: "Meter Serial #",
     icon: <Hash className="h-3 w-3 text-cyan-400" />,
   },
-];
+] as const;
 
 function BootNotificationTab() {
   const { status, config, updateBootNotification } = useActiveCharger();
@@ -260,10 +263,10 @@ function BootNotificationTab() {
         {BOOT_FIELDS.map(({ key, label, icon, required }) => (
           <Field key={key} label={label} icon={icon} required={required}>
             <Input
-              value={(boot as any)[key] ?? ""}
+              value={boot[key] ?? ""}
               disabled={disabled}
               onChange={(e) =>
-                updateBootNotification({ [key]: e.target.value } as any)
+                updateBootNotification({ [key]: e.target.value })
               }
               className="glass-input text-white h-10"
             />
@@ -471,7 +474,7 @@ export function ConfigSheet({ open, onOpenChange }: ConfigSheetProps) {
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="min-w-[560px] max-w-[90vw] p-0 border-l border-b-default bg-[oklch(0.07_0.015_270/0.98)] backdrop-blur-3xl text-white flex flex-col"
+        className="min-w-140 max-w-[90vw] p-0 border-l border-b-default bg-[oklch(0.07_0.015_270/0.98)] backdrop-blur-3xl text-white flex flex-col"
       >
         <SheetHeader className="px-6 py-4 border-b border-b-default shrink-0">
           <SheetTitle className="text-white flex items-center gap-2.5 text-lg font-bold">
