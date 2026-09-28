@@ -372,13 +372,13 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       );
                       setTargetSocOpen(true);
                     }}
-                    className="inline-flex items-center gap-1 font-semibold text-t-primary hover:text-brand hover:underline cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
+                    className="inline-flex items-center gap-1.5 font-semibold text-t-primary hover:text-brand hover:underline cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 rounded px-1 py-0.5"
                     title="Configure vehicle target energy / battery capacity"
                     aria-label={`Target: ${config.simulation.autoChargeTargetKWh} kWh. Click to configure vehicle need.`}
                   >
                     <span>{config.simulation.autoChargeTargetKWh} kWh</span>
                     <Pencil
-                      className="size-2.5 opacity-60 hover:opacity-100"
+                      className="size-3 text-t-muted hover:text-brand transition-colors"
                       aria-hidden="true"
                     />
                   </button>
@@ -1004,7 +1004,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       type="button"
                       onClick={() => setTargetKWhInput(String(preset.kwh))}
                       className={cn(
-                        "flex flex-col items-center justify-center p-2 rounded-lg border text-center transition-all cursor-pointer",
+                        "flex flex-col items-center justify-center p-2 rounded-lg border text-center transition-all cursor-pointer min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1",
                         isSelected
                           ? "border-brand bg-brand-subtle text-brand-strong ring-1 ring-brand font-semibold"
                           : "border-b-subtle bg-surface-card hover:bg-surface-hover hover:border-b-strong text-t-secondary hover:text-t-primary",
@@ -1013,7 +1013,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       <span className="font-mono text-xs font-bold">
                         {preset.kwh}
                       </span>
-                      <span className="text-3xs text-t-muted tracking-tight">
+                      <span className="text-2xs text-t-muted tracking-tight">
                         {preset.label}
                       </span>
                     </button>
@@ -1051,7 +1051,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       setTargetSocPercent(item.pct);
                     }}
                     className={cn(
-                      "flex-1 py-1 px-2 rounded-md text-2xs font-medium border text-center transition-colors cursor-pointer",
+                      "flex-1 py-1.5 px-2 rounded-md text-2xs font-medium border text-center transition-colors cursor-pointer min-h-[32px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1",
                       targetSocPercent === item.pct
                         ? "border-brand/40 bg-brand/10 text-brand-strong font-semibold"
                         : "border-b-subtle bg-surface-inset text-t-secondary hover:text-t-primary hover:bg-surface-hover",
@@ -1061,7 +1061,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                   </button>
                 ))}
               </div>
-              <p className="text-3xs text-t-muted leading-relaxed">
+              <p className="text-2xs text-t-muted leading-relaxed">
                 {targetSocPercent < 100
                   ? `Simulates vehicle cutoff at ${targetSocPercent}% SoC to optimize battery longevity (common DC fast charging practice).`
                   : "Simulates full charge to 100% SoC before stopping the transaction."}
