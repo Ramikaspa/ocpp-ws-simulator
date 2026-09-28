@@ -1,6 +1,6 @@
 {
   "name": "ocpp-ws-simulator",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A browser-based OCPP 1.6 and 2.0.1 charge point simulator",
   "author": "Rohit Tiwari <rohit.tiwari@example.com>",
   "license": "MIT",
