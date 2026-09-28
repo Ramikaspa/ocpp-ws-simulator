@@ -1008,7 +1008,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       type="button"
                       onClick={() => setTargetKWhInput(String(preset.kwh))}
                       className={cn(
-                        "flex flex-col items-center justify-center p-2 rounded-lg border text-center transition-all cursor-pointer min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1",
+                        "flex flex-col items-center justify-center p-2 rounded-lg border text-center transition-all cursor-pointer min-h-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1",
                         isSelected
                           ? "border-brand bg-brand-subtle text-brand-strong ring-1 ring-brand font-semibold"
                           : "border-b-subtle bg-surface-card hover:bg-surface-hover hover:border-b-strong text-t-secondary hover:text-t-primary",
@@ -1055,7 +1055,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       setTargetSocPercent(item.pct);
                     }}
                     className={cn(
-                      "flex-1 py-1.5 px-2 rounded-md text-2xs font-medium border text-center transition-colors cursor-pointer min-h-[32px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1",
+                      "flex-1 py-1.5 px-2 rounded-md text-2xs font-medium border text-center transition-colors cursor-pointer min-h-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1",
                       targetSocPercent === item.pct
                         ? "border-brand/40 bg-brand/10 text-brand-strong font-semibold"
                         : "border-b-subtle bg-surface-inset text-t-secondary hover:text-t-primary hover:bg-surface-hover",
