@@ -172,18 +172,18 @@
    ══════════════════════════════════════ */
 
 :where(
-    a[href],
-    button,
-    input,
-    select,
-    textarea,
-    summary,
-    [role="button"],
-    [role="tab"],
-    [role="switch"],
-    [role="checkbox"],
-    [tabindex]:not([tabindex="-1"])
-  ):focus-visible {
+  a[href],
+  button,
+  input,
+  select,
+  textarea,
+  summary,
+  [role="button"],
+  [role="tab"],
+  [role="switch"],
+  [role="checkbox"],
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
@@ -341,6 +341,14 @@ header {
 .custom-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: #4b5268 transparent;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* ══════════════════════════════════════

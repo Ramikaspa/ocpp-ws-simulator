@@ -165,7 +165,7 @@ export function ChargerTabBar() {
         ref={scrollContainerRef}
         role="tablist"
         aria-label="Chargers"
-        className="flex-1 flex items-stretch overflow-x-auto custom-scrollbar min-w-0"
+        className="flex-1 flex items-stretch overflow-x-auto no-scrollbar min-w-0"
       >
         {chargers.map((slot, idx) => {
           const isActive = slot.id === activeChargerId;
