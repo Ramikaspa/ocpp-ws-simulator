@@ -20,12 +20,21 @@
  * - Focus Indication: High-contrast focus rings for keyboard navigation (ISO 9241-171).
  */
 
-import { Copy, Loader2, Plus, Wifi, WifiOff, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
+    ChevronLeft,
+    ChevronRight,
+    Copy,
+    Loader2,
+    Plus,
+    Wifi,
+    WifiOff,
+    X,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { removeService } from "@/lib/ocppClient";
 import { cn } from "@/lib/utils";
@@ -57,6 +66,36 @@ export function ChargerTabBar() {
   );
   const tabContainerRefs = useRef<Record<string, HTMLElement | null>>({});
   const tabButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const checkScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 2);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
+  }, []);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    checkScroll();
+    el.addEventListener("scroll", checkScroll, { passive: true });
+    window.addEventListener("resize", checkScroll);
+    return () => {
+      el.removeEventListener("scroll", checkScroll);
+      window.removeEventListener("resize", checkScroll);
+    };
+  }, [checkScroll]);
+
+  const scrollByAmount = (direction: "left" | "right") => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const delta = direction === "left" ? -220 : 220;
+    el.scrollBy({ left: delta, behavior: "smooth" });
+  };
 
   // Ensure active tab is scrolled into view when switched or when a new charger is added
   useEffect(() => {
@@ -66,8 +105,9 @@ export function ChargerTabBar() {
         block: "nearest",
         inline: "nearest",
       });
+      setTimeout(checkScroll, 300);
     }
-  }, [activeChargerId]);
+  }, [activeChargerId, checkScroll]);
 
   // Arrow key navigation across tabs (ISO 9241-171 keyboard accessibility)
   const handleKeyDown = (e: React.KeyboardEvent, index: number) => {
@@ -93,13 +133,39 @@ export function ChargerTabBar() {
   return (
     <nav
       aria-label="Chargers"
-      className="relative flex items-stretch h-9 bg-surface-base overflow-x-auto custom-scrollbar shrink-0 select-none"
+      className="relative flex items-stretch h-9 bg-surface-base overflow-hidden shrink-0 select-none"
     >
-      {/* Tab items list — File tabs sit flush side-by-side separated by vertical borders */}
+      {/* ── LEFT STICKY: Left Arrow ── */}
+      <div className="flex items-center shrink-0 border-r border-b border-b-subtle bg-surface-base z-10">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                onClick={() => scrollByAmount("left")}
+                disabled={!canScrollLeft}
+                aria-label="Scroll tabs left"
+                className="flex items-center justify-center h-full px-2 text-t-muted hover:text-t-primary hover:bg-surface-hover transition-colors disabled:opacity-25 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand"
+              >
+                <ChevronLeft className="size-3.5" aria-hidden="true" />
+              </button>
+            }
+          />
+          <TooltipContent
+            side="bottom"
+            className="text-2xs py-0.5 px-1.5 font-normal"
+          >
+            Scroll left
+          </TooltipContent>
+        </Tooltip>
+      </div>
+
+      {/* ── CENTER: Scrollable Tab Items List ── */}
       <div
+        ref={scrollContainerRef}
         role="tablist"
         aria-label="Chargers"
-        className="flex items-stretch flex-1 min-w-full shrink-0"
+        className="flex-1 flex items-stretch overflow-x-auto custom-scrollbar min-w-0"
       >
         {chargers.map((slot, idx) => {
           const isActive = slot.id === activeChargerId;
@@ -293,32 +359,56 @@ export function ChargerTabBar() {
           );
         })}
 
-        {/* Inline New Tab (+) button immediately following tabs — IDE style */}
-        <div className="flex items-center shrink-0 border-r border-b border-b-subtle bg-surface-base">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  onClick={() => addCharger()}
-                  aria-label="New charger tab"
-                  className="flex items-center justify-center h-full px-2.5 text-t-muted hover:text-t-primary hover:bg-surface-hover transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand"
-                >
-                  <Plus className="size-3.5" aria-hidden="true" />
-                </button>
-              }
-            />
-            <TooltipContent
-              side="bottom"
-              className="text-2xs py-0.5 px-1.5 font-normal"
-            >
-              New charger (Alt+C)
-            </TooltipContent>
-          </Tooltip>
-        </div>
+        {/* Empty track filler inside scrollable center that carries the bottom border */}
+        <div className="flex-1 border-b border-b-subtle bg-surface-base min-w-4" />
+      </div>
 
-        {/* Empty track filler that carries the bottom border to the end of the bar */}
-        <div className="flex-1 border-b border-b-subtle bg-surface-base min-w-8" />
+      {/* ── RIGHT STICKY: Right Arrow & Add Charger (+) ── */}
+      <div className="flex items-center shrink-0 border-l border-b border-b-subtle bg-surface-base z-10 shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.3)]">
+        {/* Right Arrow (Scroll right) */}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                onClick={() => scrollByAmount("right")}
+                disabled={!canScrollRight}
+                aria-label="Scroll tabs right"
+                className="flex items-center justify-center h-full px-2 text-t-muted hover:text-t-primary hover:bg-surface-hover transition-colors disabled:opacity-25 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand border-r border-b-subtle"
+              >
+                <ChevronRight className="size-3.5" aria-hidden="true" />
+              </button>
+            }
+          />
+          <TooltipContent
+            side="bottom"
+            className="text-2xs py-0.5 px-1.5 font-normal"
+          >
+            Scroll right
+          </TooltipContent>
+        </Tooltip>
+
+        {/* Add Charger (+) button */}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                onClick={() => addCharger()}
+                aria-label="Add new charger"
+                className="flex items-center justify-center h-full px-2.5 text-t-muted hover:text-t-primary hover:bg-surface-hover transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand"
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+              </button>
+            }
+          />
+          <TooltipContent
+            side="bottom"
+            className="text-2xs py-0.5 px-1.5 font-normal"
+          >
+            Add charger (Alt+C)
+          </TooltipContent>
+        </Tooltip>
       </div>
     </nav>
   );
