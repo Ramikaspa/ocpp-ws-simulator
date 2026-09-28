@@ -74,27 +74,87 @@ export function ChargerTabBar() {
   const checkScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    setCanScrollLeft(el.scrollLeft > 2);
-    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
-  }, []);
+
+    const activeEl = activeChargerId
+      ? tabContainerRefs.current[activeChargerId]
+      : null;
+
+    let hasLeftRoom = el.scrollLeft > 2;
+    let hasRightRoom = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
+
+    if (activeEl) {
+      const containerRect = el.getBoundingClientRect();
+      const activeRect = activeEl.getBoundingClientRect();
+
+      // Left button can scroll left only if active tab has room to move right without crossing right edge
+      const roomToRight = containerRect.right - activeRect.right;
+      hasLeftRoom = hasLeftRoom && roomToRight > 2;
+
+      // Right button can scroll right only if active tab has room to move left without crossing left edge
+      const roomToLeft = activeRect.left - containerRect.left;
+      hasRightRoom = hasRightRoom && roomToLeft > 2;
+    }
+
+    setCanScrollLeft(hasLeftRoom);
+    setCanScrollRight(hasRightRoom);
+  }, [activeChargerId]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    checkScroll();
-    el.addEventListener("scroll", checkScroll, { passive: true });
-    window.addEventListener("resize", checkScroll);
+
+    const handleScroll = () => {
+      checkScroll();
+    };
+
+    handleScroll();
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", handleScroll);
     return () => {
-      el.removeEventListener("scroll", checkScroll);
-      window.removeEventListener("resize", checkScroll);
+      el.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", handleScroll);
     };
   }, [checkScroll]);
 
   const scrollByAmount = (direction: "left" | "right") => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    const delta = direction === "left" ? -220 : 220;
-    el.scrollBy({ left: delta, behavior: "smooth" });
+
+    const activeEl = activeChargerId
+      ? tabContainerRefs.current[activeChargerId]
+      : null;
+
+    const baseStep = 200;
+
+    if (direction === "right") {
+      // Scrolling right moves tabs leftwards. Stop when active tab's left edge reaches the left view boundary
+      let maxStep = Math.max(0, el.scrollWidth - el.clientWidth - el.scrollLeft);
+      if (activeEl) {
+        const containerRect = el.getBoundingClientRect();
+        const activeRect = activeEl.getBoundingClientRect();
+        const roomToLeft = activeRect.left - containerRect.left;
+        maxStep = Math.min(maxStep, Math.max(0, roomToLeft));
+      }
+      const move = Math.min(baseStep, maxStep);
+      if (move > 0) {
+        el.scrollBy({ left: move, behavior: "smooth" });
+        setTimeout(checkScroll, 320);
+      }
+    } else {
+      // Scrolling left moves tabs rightwards. Stop when active tab's right edge reaches the right view boundary
+      let maxStep = Math.max(0, el.scrollLeft);
+      if (activeEl) {
+        const containerRect = el.getBoundingClientRect();
+        const activeRect = activeEl.getBoundingClientRect();
+        const roomToRight = containerRect.right - activeRect.right;
+        maxStep = Math.min(maxStep, Math.max(0, roomToRight));
+      }
+      const move = Math.min(baseStep, maxStep);
+      if (move > 0) {
+        el.scrollBy({ left: -move, behavior: "smooth" });
+        setTimeout(checkScroll, 320);
+      }
+    }
   };
 
   // Ensure active tab is scrolled into view when switched or when a new charger is added
@@ -105,7 +165,7 @@ export function ChargerTabBar() {
         block: "nearest",
         inline: "nearest",
       });
-      setTimeout(checkScroll, 300);
+      setTimeout(checkScroll, 350);
     }
   }, [activeChargerId, checkScroll]);
 
