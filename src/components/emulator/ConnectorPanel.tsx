@@ -307,9 +307,9 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
       )}
 
       {/* ── BODY ── */}
-      <div className="grid flex-1 grid-cols-1 @2xl:grid-cols-2">
+      <div className="grid flex-1 grid-cols-1 @3xl:grid-cols-2 min-w-0">
         {/* LEFT: session metering, then status & fault testing */}
-        <div className="@container flex flex-col divide-y divide-b-subtle @2xl:border-e @2xl:border-b-subtle">
+        <div className="@container flex flex-col divide-y divide-b-subtle @3xl:border-e @3xl:border-b-subtle min-w-0">
           <div className="p-4">
             <SectionHeading
               icon={<Gauge aria-hidden="true" />}
@@ -319,6 +319,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                   variant="soft-brand"
                   disabled={!inTx || !isConnected}
                   onClick={() => ocppService.sendMeterValues(connectorId)}
+                  className="shrink-0"
                 >
                   <Send aria-hidden="true" /> Send MeterValues
                 </Button>
@@ -392,9 +393,9 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
             </div>
 
             {/* Manual meter controls */}
-            <div className="mt-4 grid grid-cols-1 gap-3 @sm:grid-cols-2">
+            <div className="mt-4 grid grid-cols-1 gap-3 @md:grid-cols-2">
               <Field label="Set register (Wh)" htmlFor={`${uid}-set`}>
-                <div className="flex gap-1.5">
+                <div className="flex gap-1.5 min-w-0">
                   <Input
                     id={`${uid}-set`}
                     inputMode="decimal"
@@ -402,20 +403,21 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                     placeholder="e.g. 5000"
                     onChange={(e) => setMeterSetInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleSetMeter()}
-                    className="h-8 font-mono"
+                    className="h-8 font-mono flex-1 min-w-0"
                   />
                   <Button
                     size="sm"
                     variant="soft-brand"
                     onClick={handleSetMeter}
                     disabled={meterSetInput.trim() === ""}
+                    className="shrink-0"
                   >
                     Set
                   </Button>
                 </div>
               </Field>
               <Field label="Add energy (Wh)" htmlFor={`${uid}-add`}>
-                <div className="flex gap-1.5">
+                <div className="flex gap-1.5 min-w-0">
                   <Input
                     id={`${uid}-add`}
                     inputMode="decimal"
@@ -424,12 +426,13 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                     onChange={(e) =>
                       setCustomMeterStep(Number(e.target.value) || 0)
                     }
-                    className="h-8 font-mono"
+                    className="h-8 font-mono flex-1 min-w-0"
                   />
                   <Button
                     size="sm"
                     variant="soft-brand"
                     disabled={!inTx}
+                    className="shrink-0"
                     onClick={() =>
                       updateConnector(connectorId, {
                         currentMeterValue:
@@ -501,11 +504,12 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
             <SectionHeading icon={<AlertTriangle aria-hidden="true" />}>
               Status &amp; fault testing
             </SectionHeading>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 @xs:grid-cols-2 gap-2">
               <Button
                 size="sm"
                 variant="neutral"
                 disabled={!isConnected}
+                className="w-full justify-center min-w-0"
                 onClick={() =>
                   ocppService.sendStatusNotification(
                     connectorId,
@@ -519,6 +523,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 size="sm"
                 variant="neutral"
                 disabled={!isConnected}
+                className="w-full justify-center min-w-0"
                 onClick={() =>
                   ocppService.sendStatusNotification(connectorId, "Unavailable")
                 }
@@ -526,20 +531,21 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 <PowerOff aria-hidden="true" /> Send Unavailable
               </Button>
             </div>
-            <div className="mt-3 grid grid-cols-1 gap-3 @sm:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-3 @md:grid-cols-2">
               <Field label="Status to send">
-                <div className="flex gap-1.5">
+                <div className="flex gap-1.5 min-w-0">
                   <OptionSelect
                     size="sm"
                     value={selectedStatus}
                     options={ALL_STATUSES}
                     onChange={setSelectedStatus}
-                    className="flex-1"
+                    className="flex-1 min-w-0"
                   />
                   <Button
                     size="sm"
                     variant="neutral"
                     disabled={!isConnected}
+                    className="shrink-0"
                     onClick={() =>
                       ocppService.sendStatusNotification(
                         connectorId,
@@ -552,18 +558,19 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 </div>
               </Field>
               <Field label="Fault code">
-                <div className="flex gap-1.5">
+                <div className="flex gap-1.5 min-w-0">
                   <OptionSelect
                     size="sm"
                     value={selectedErrorCode}
                     options={ERROR_CODES}
                     onChange={setSelectedErrorCode}
-                    className="flex-1"
+                    className="flex-1 min-w-0"
                   />
                   <Button
                     size="sm"
                     variant="soft-danger"
                     disabled={!isConnected}
+                    className="shrink-0"
                     onClick={() =>
                       ocppService.sendStatusNotification(
                         connectorId,
@@ -581,14 +588,14 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
         </div>
 
         {/* RIGHT: the charging flow, top to bottom */}
-        <div className="@container flex flex-col divide-y divide-b-subtle">
+        <div className="@container flex flex-col divide-y divide-b-subtle min-w-0">
           {/* Authorization */}
           <div className="p-4">
             <SectionHeading icon={<ShieldCheck aria-hidden="true" />}>
               Authorization
             </SectionHeading>
             <Field label="ID tag" htmlFor={`${uid}-idtag`}>
-              <div className="flex gap-2">
+              <div className="flex gap-2 min-w-0">
                 <Input
                   id={`${uid}-idtag`}
                   value={connector.idTag}
@@ -598,12 +605,13 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                     })
                   }
                   placeholder="RFID token"
-                  className="font-mono"
+                  className="font-mono flex-1 min-w-0"
                 />
                 <Button
                   variant="default"
                   disabled={!isConnected || authResult === "loading"}
                   onClick={handleAuth}
+                  className="shrink-0"
                 >
                   <ShieldCheck aria-hidden="true" />
                   {authResult === "loading" ? "Authorizing…" : "Authorize"}
@@ -633,7 +641,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
             <SectionHeading
               icon={<Cable aria-hidden="true" />}
               action={
-                <div className="flex gap-1.5">
+                <div className="flex flex-wrap gap-1.5">
                   <Badge
                     variant={connector.cablePluggedIn ? "success" : "neutral"}
                   >
@@ -654,12 +662,13 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
             >
               Cable
             </SectionHeading>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 @xs:grid-cols-3 gap-2">
               {!connector.cablePluggedIn ? (
                 <Button
                   size="sm"
                   variant="soft-success"
                   disabled={!isConnected}
+                  className="w-full justify-center min-w-0"
                   onClick={() => {
                     updateConnector(connectorId, {
                       cablePluggedIn: true,
@@ -678,6 +687,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                   size="sm"
                   variant="soft-danger"
                   disabled={!isConnected || unplugBlocker !== null}
+                  className="w-full justify-center min-w-0"
                   aria-describedby={
                     unplugBlocker ? `${uid}-unplug-hint` : undefined
                   }
@@ -700,6 +710,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 variant={connector.cableLocked ? "soft-warning" : "neutral"}
                 aria-pressed={connector.cableLocked}
                 disabled={!isConnected || !connector.cablePluggedIn}
+                className="w-full justify-center min-w-0"
                 onClick={() =>
                   updateConnector(connectorId, {
                     cableLocked: !connector.cableLocked,
@@ -717,6 +728,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 size="sm"
                 variant={inMaintenance ? "soft-warning" : "neutral"}
                 aria-pressed={inMaintenance}
+                className="w-full justify-center min-w-0"
                 onClick={toggleMaintenance}
               >
                 <Wrench aria-hidden="true" /> Maintenance
@@ -738,11 +750,12 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
               Transaction
             </SectionHeading>
             {!inTx ? (
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 @xs:grid-cols-2 gap-2">
                 <Button
                   variant="success"
                   size="lg"
                   disabled={!isConnected}
+                  className="w-full justify-center min-w-0"
                   onClick={() =>
                     is2x
                       ? ocppService.startTransaction201(
@@ -758,6 +771,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                   variant="neutral"
                   size="lg"
                   disabled={!isConnected}
+                  className="w-full justify-center min-w-0"
                   title="Start a transaction that charges to the target kWh, then stops"
                   onClick={() => ocppService.startAutoCharge(connectorId)}
                 >
@@ -765,11 +779,12 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 </Button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2 @sm:items-end">
+              <div className="grid grid-cols-1 gap-3 @md:grid-cols-2 @md:items-end min-w-0">
                 <Button
                   variant="danger"
                   size="lg"
                   disabled={!isConnected}
+                  className="w-full justify-center min-w-0"
                   onClick={() =>
                     is2x
                       ? ocppService.stopTransaction201(connectorId)
@@ -778,11 +793,12 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                 >
                   <Square aria-hidden="true" /> Stop transaction
                 </Button>
-                <Field label="Stop reason">
+                <Field label="Stop reason" className="min-w-0">
                   <OptionSelect
                     size="sm"
                     value={connector.stopReason}
                     options={STOP_REASONS}
+                    className="w-full min-w-0"
                     onChange={(v) =>
                       updateConnector(connectorId, {
                         stopReason: v,

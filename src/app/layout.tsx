@@ -94,13 +94,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
-      <body className={`${inter.variable} ${inter.className} antialiased`}>
+    <html lang="en" className="dark h-full w-full overflow-hidden">
+      <body
+        className={`${inter.variable} ${inter.className} antialiased h-full w-full overflow-hidden`}
+      >
         {/* ── Subtle grid overlay ── */}
         <div className="bg-grid-overlay" aria-hidden="true" />
 
         {/* ── App content ── */}
-        <div className="relative z-10 flex flex-col min-h-screen">
+        <div className="relative z-10 flex flex-col h-full w-full overflow-hidden">
           <TooltipProvider>{children}</TooltipProvider>
         </div>
       </body>

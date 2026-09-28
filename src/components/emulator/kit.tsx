@@ -103,7 +103,7 @@ export function SectionHeading({
 	return (
 		<div
 			className={cn(
-				'flex items-center justify-between gap-2 mb-2',
+				'flex flex-wrap items-center justify-between gap-2 mb-2',
 				className
 			)}
 		>
@@ -157,7 +157,7 @@ export function Field({
 	const id = htmlFor ?? control?.props.id ?? generated;
 
 	return (
-		<FieldRoot className={cn('gap-1.5', className)}>
+		<FieldRoot className={cn('gap-1.5 min-w-0', className)}>
 			<FieldLabel
 				htmlFor={id}
 				className='gap-1.5 text-2xs font-semibold uppercase tracking-wider text-t-muted [&_svg]:size-3 [&_svg]:shrink-0'

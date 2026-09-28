@@ -185,12 +185,12 @@ export default function Home() {
                 >
                   <div
                     className={cn(
-                      "h-full overflow-hidden",
+                      "h-full overflow-hidden min-w-0",
                       configOpen && "pr-1",
                     )}
                   >
-                    <div className="h-full overflow-y-auto p-5 custom-scrollbar">
-                      <div className="max-w-[1400px] mx-auto w-full flex flex-col">
+                    <div className="h-full overflow-y-auto overflow-x-hidden p-5 custom-scrollbar min-w-0">
+                      <div className="max-w-[1400px] mx-auto w-full flex flex-col min-w-0">
                         <ConnectorsView />
                       </div>
                     </div>

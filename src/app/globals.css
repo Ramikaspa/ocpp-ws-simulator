@@ -107,7 +107,7 @@
 
   /* ── Borders ── */
   --border: #282b3a;
-  --input: #60687e;
+  --input: #343848;
   --ring: #a78bfa;
 
   /* ── Brand (violet) as text and tint ── */
@@ -142,7 +142,7 @@
   --b-subtle: #232636;
   --b-default: #282b3a;
   --b-strong: #343848;
-  --b-control: #60687e;
+  --b-control: #343848;
 }
 
 /* ══════════════════════════════════════
@@ -156,10 +156,13 @@
   html,
   body {
     height: 100%;
+    width: 100%;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
   }
   body {
     @apply text-foreground antialiased;
-    min-height: 100vh;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 }
@@ -174,9 +177,8 @@
 :where(
   a[href],
   button,
-  input,
-  select,
-  textarea,
+  input[type="checkbox"],
+  input[type="radio"],
   summary,
   [role="button"],
   [role="tab"],
@@ -186,6 +188,14 @@
 ):focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+:where(
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea
+):focus-visible {
+  outline: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
