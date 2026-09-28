@@ -1030,7 +1030,7 @@ function SimulationTab() {
         title="Auto Charging"
         icon={<FlaskConical className="h-3.5 w-3.5" />}
         color="text-violet-400"
-        description="Configure the auto-charge state machine behavior"
+        description="Configure the auto-charge state machine behavior. Target kWh is also the EV battery size SoC is computed against."
       >
         <div className="grid grid-cols-2 gap-3">
           <Field

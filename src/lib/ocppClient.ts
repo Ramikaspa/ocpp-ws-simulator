@@ -9,10 +9,14 @@ import {
 	type LocalAuthEntry,
 	type ScenarioStep,
 	type StationConfigKey,
+	sessionSocPct,
 	useEmulatorStore,
 } from "../store/emulatorStore";
 
 type Timer = ReturnType<typeof setInterval>;
+
+/** Wh at 0.01 precision — keeps float noise out of the register and payloads. */
+const roundWh = (wh: number) => Math.round(wh * 100) / 100;
 
 type statusType =
 	| "Available"
@@ -2130,7 +2134,7 @@ class OCPPService {
 			"Ended",
 			evseId,
 			reason,
-			snap.currentMeterValue,
+			roundWh(snap.currentMeterValue),
 		);
 		store.updateConnector(this.chargerId, evseId, {
 			inTransaction: false,
@@ -2422,8 +2426,10 @@ class OCPPService {
 		const payload = {
 			connectorId,
 			idTag: tag,
+			// The register as it stands now: it carries over from the last
+			// session, and a value set by hand while idle must be honoured.
 			meterStart: Math.round(
-				freshSlot.runtime.connectors[connectorId].startMeterValue,
+				freshSlot.runtime.connectors[connectorId].currentMeterValue,
 			),
 			timestamp: new Date().toISOString(),
 		};
@@ -2521,9 +2527,13 @@ class OCPPService {
 					this.clearMeterTimer(connectorId);
 					return;
 				}
-				s.updateConnector(this.chargerId, connectorId, {
-					currentMeterValue: current.currentMeterValue + increment,
-				});
+				// Auto-charge advances the meter on its own tick; adding here as
+				// well would count the same energy twice.
+				if (!this.autoChargeTimers[connectorId]) {
+					s.updateConnector(this.chargerId, connectorId, {
+						currentMeterValue: roundWh(current.currentMeterValue + increment),
+					});
+				}
 				this.sendMeterValues(connectorId);
 			}, meterInterval * 1000),
 		);
@@ -2538,9 +2548,8 @@ class OCPPService {
 		if (!connector?.inTransaction) return;
 
 		const m = slot.config.simulation.measurands;
-		const meterWh = connector.currentMeterValue;
-		const targetWh = slot.config.simulation.autoChargeTargetKWh * 1000;
-		const socPct = Math.min(100, Math.round((meterWh / targetWh) * 100));
+		const meterWh = roundWh(connector.currentMeterValue);
+		const socPct = sessionSocPct(connector, slot.config.simulation);
 		const powerW = 3000 + Math.floor(Math.random() * 2000);
 		const voltV = 228 + Math.round(Math.random() * 4);
 		const ampA = +(powerW / voltV).toFixed(1);
@@ -2585,7 +2594,7 @@ class OCPPService {
 		if (m.soc)
 			sampledValues.push({
 				measurand: "SoC",
-				value: String(socPct),
+				value: socPct.toFixed(1),
 				unit: "Percent",
 				location: "EV",
 			});
@@ -3040,13 +3049,17 @@ class OCPPService {
 				}
 				return;
 			}
-			const newMeter =
-				current.currentMeterValue + autoChargeMeterIncrement;
+			const newMeter = roundWh(
+				current.currentMeterValue + autoChargeMeterIncrement,
+			);
 			s.updateConnector(this.chargerId, connectorId, {
 				currentMeterValue: newMeter,
 			});
+			// The target is energy for this session; the register itself keeps
+			// counting across sessions.
+			const deliveredWh = newMeter - current.startMeterValue;
 			const targetWh = autoChargeTargetKWh * 1000;
-			if (newMeter >= targetWh || elapsed >= autoChargeDurationSec) {
+			if (deliveredWh >= targetWh || elapsed >= autoChargeDurationSec) {
 				if (this.autoChargeTimers[connectorId]) {
 					clearInterval(this.autoChargeTimers[connectorId]);
 					delete this.autoChargeTimers[connectorId];
@@ -3065,7 +3078,7 @@ class OCPPService {
 						payload: {
 							connectorId,
 							message: `Auto-charge complete: ${(
-								newMeter / 1000
+								deliveredWh / 1000
 							).toFixed(1)} kWh in ${elapsed}s`,
 						},
 					});

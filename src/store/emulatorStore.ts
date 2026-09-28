@@ -552,6 +552,22 @@ const DEFAULT_SIMULATION: SimulationConfig = {
   responseDelayMs: 0,
 };
 
+/**
+ * EV state of charge for the connector's current session, in percent.
+ * Every session starts from an empty battery sized at the auto-charge
+ * target, so SoC follows the energy delivered since meterStart — never the
+ * cumulative register, which carries over from one session to the next.
+ */
+export function sessionSocPct(
+  connector: Pick<ConnectorState, "startMeterValue" | "currentMeterValue">,
+  simulation: Pick<SimulationConfig, "autoChargeTargetKWh">,
+): number {
+  const capacityWh = simulation.autoChargeTargetKWh * 1000;
+  if (!(capacityWh > 0)) return 0;
+  const deliveredWh = connector.currentMeterValue - connector.startMeterValue;
+  return Math.min(100, Math.max(0, (deliveredWh / capacityWh) * 100));
+}
+
 const makeDefaultConfig = (index: number): EmulatorConfig => ({
   endpoint: "ws://localhost:9000",
   chargePointId: chargePointIdForIndex(index),

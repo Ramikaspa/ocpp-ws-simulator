@@ -29,7 +29,11 @@ import { createPortal } from "react-dom";
 import { Input } from "@/components/ui/input";
 import { useActiveCharger } from "@/hooks/useActiveCharger";
 import { ocppService } from "@/lib/ocppClient";
-import type { ConnectorStatus, StopReason } from "@/store/emulatorStore";
+import {
+  type ConnectorStatus,
+  type StopReason,
+  sessionSocPct,
+} from "@/store/emulatorStore";
 
 /* ──────────────────────────────────
    BASE UI COMPONENTS
@@ -307,7 +311,11 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
   const isConnected = globalStatus === "connected";
   const st = SC[connector.status];
   const inTx = connector.inTransaction;
-  const barPct = Math.min((connector.currentMeterValue / 5000) * 100, 100);
+  // Same SoC the MeterValues carry: session energy over the configured target.
+  const socPct = inTx ? sessionSocPct(connector, config.simulation) : 0;
+  const sessionKWh = inTx
+    ? (connector.currentMeterValue - connector.startMeterValue) / 1000
+    : 0;
 
   // Set meter value handler
   const handleSetMeter = () => {
@@ -497,16 +505,29 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
               </div>
             )}
 
-            {/* Progress bar */}
+            {/* SoC progress */}
             <div
-              className={`mt-3 h-1.5 w-full rounded-full bg-[#1d1f2b] overflow-hidden transition-opacity duration-300 ${
+              className={`mt-3 flex items-center justify-between text-[9px] font-bold uppercase tracking-widest ${
+                inTx ? "text-[#a0a8b8]" : "text-[#383e50]"
+              }`}
+            >
+              <span className="flex items-center gap-1">
+                <Battery className="h-3 w-3" /> SoC {socPct.toFixed(1)}%
+              </span>
+              <span className="font-mono normal-case tracking-normal">
+                {sessionKWh.toFixed(2)} / {config.simulation.autoChargeTargetKWh}{" "}
+                kWh
+              </span>
+            </div>
+            <div
+              className={`mt-1.5 h-1.5 w-full rounded-full bg-[#1d1f2b] overflow-hidden transition-opacity duration-300 ${
                 inTx ? "opacity-100" : "opacity-30"
               }`}
             >
               <div
                 className="h-full rounded-full transition-all duration-700 ease-out"
                 style={{
-                  width: `${barPct}%`,
+                  width: `${socPct}%`,
                   background: inTx ? st.accent : "#5d6577",
                   boxShadow: inTx ? `0 0 12px ${st.accent}` : "none",
                 }}
