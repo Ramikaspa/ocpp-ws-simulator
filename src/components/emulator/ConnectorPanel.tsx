@@ -248,6 +248,7 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
             subject="connector"
             name={connectorName}
             maxLength={30}
+            tooltip="Rename connector"
             onRename={(name) => updateConnectorName(connectorId, name)}
             open={renameOpen}
             onOpenChange={setRenameOpen}
