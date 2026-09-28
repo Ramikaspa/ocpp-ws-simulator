@@ -2,12 +2,12 @@
 
 import {
   BatteryCharging,
+  CircleAlert,
   Eye,
   EyeOff,
   Loader2,
   Lock,
   User,
-  CircleAlert,
 } from "lucide-react";
 import {
   createContext,
@@ -62,7 +62,7 @@ function LoginPage({ onSuccess }: { onSuccess: () => void }) {
   };
 
   return (
-    <main className="min-h-screen w-full flex items-center justify-center bg-surface-base p-4 relative overflow-hidden">
+    <main className="h-full w-full flex items-center justify-center bg-surface-base p-4 relative overflow-hidden">
       {/* Background glow */}
       <div
         aria-hidden="true"
@@ -222,7 +222,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (state === "unknown") {
     // Show nothing while checking to avoid flash
     return (
-      <div className="min-h-screen w-full flex items-center justify-center bg-surface-base">
+      <div className="h-full w-full flex items-center justify-center bg-surface-base">
         <Loader2 className="h-6 w-6 text-brand animate-spin" />
       </div>
     );

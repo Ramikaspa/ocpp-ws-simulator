@@ -54,7 +54,7 @@ function ResizableHandle({
           className={cn(
             "z-20 flex items-center justify-center rounded-full border border-b-strong bg-surface-elevated text-t-muted shadow-md transition-all",
             "group-hover:border-brand/80 group-hover:bg-surface-hover group-hover:text-brand group-hover:scale-105",
-            "group-data-[resize-handle-active]:border-brand group-data-[resize-handle-active]:bg-brand group-data-[resize-handle-active]:text-white",
+            "group-data-resize-handle-active:border-brand group-data-resize-handle-active:bg-brand group-data-resize-handle-active:text-white",
             isHorizontal
               ? "h-2 w-7 cursor-row-resize"
               : "h-7 w-2 cursor-col-resize",

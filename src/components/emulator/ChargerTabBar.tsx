@@ -159,12 +159,25 @@ export function ChargerTabBar() {
 
   // Ensure active tab is scrolled into view when switched or when a new charger is added
   useEffect(() => {
-    if (activeChargerId && tabContainerRefs.current[activeChargerId]) {
-      tabContainerRefs.current[activeChargerId]?.scrollIntoView({
-        behavior: "smooth",
-        block: "nearest",
-        inline: "nearest",
-      });
+    const container = scrollContainerRef.current;
+    const activeTab = activeChargerId
+      ? tabContainerRefs.current[activeChargerId]
+      : null;
+    if (container && activeTab) {
+      const containerRect = container.getBoundingClientRect();
+      const tabRect = activeTab.getBoundingClientRect();
+
+      if (tabRect.left < containerRect.left) {
+        container.scrollBy({
+          left: tabRect.left - containerRect.left,
+          behavior: "smooth",
+        });
+      } else if (tabRect.right > containerRect.right) {
+        container.scrollBy({
+          left: tabRect.right - containerRect.right,
+          behavior: "smooth",
+        });
+      }
       setTimeout(checkScroll, 350);
     }
   }, [activeChargerId, checkScroll]);

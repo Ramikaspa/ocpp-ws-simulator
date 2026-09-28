@@ -149,18 +149,23 @@ export default function Home() {
 
   return (
     <AuthGate>
-      <div className="h-screen w-screen flex flex-col overflow-hidden">
+      <div className="h-full w-full flex flex-col overflow-hidden">
         <script
           type="application/ld+json"
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: needed for JSON-LD
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
         {/* Bypass block (WCAG 2.4.1): first tab stop jumps past the header */}
-        <a
-          href="#main-content"
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            document.getElementById("main-content")?.focus();
+          }}
           className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-xs focus:font-semibold focus:text-white"
         >
           Skip to main content
-        </a>
+        </button>
 
         {/* ── Header ── */}
         <HeaderBar onSettingsOpen={toggleConfig} />
