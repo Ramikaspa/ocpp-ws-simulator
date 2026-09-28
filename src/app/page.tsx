@@ -183,9 +183,16 @@ export default function Home() {
                   minSize={"20%"}
                   maxSize={logsOpen ? "80%" : "100%"}
                 >
-                  <div className="h-full overflow-y-auto p-5 custom-scrollbar">
-                    <div className="max-w-[1400px] mx-auto w-full flex flex-col">
-                      <ConnectorsView />
+                  <div
+                    className={cn(
+                      "h-full overflow-hidden",
+                      configOpen && "pr-1",
+                    )}
+                  >
+                    <div className="h-full overflow-y-auto p-5 custom-scrollbar">
+                      <div className="max-w-[1400px] mx-auto w-full flex flex-col">
+                        <ConnectorsView />
+                      </div>
                     </div>
                   </div>
                 </ResizablePanel>
@@ -193,7 +200,7 @@ export default function Home() {
                 {logsOpen ? (
                   <>
                     {/* Horizontal resize handle */}
-                    <ResizableHandle className="h-px! bg-surface-hover hover:bg-brand/50 transition-colors data-resize-handle-active:bg-brand" />
+                    <ResizableHandle className="h-px! bg-b-strong hover:bg-brand transition-colors data-resize-handle-active:bg-brand" />
 
                     {/* Bottom: Logs */}
                     <ResizablePanel
@@ -232,7 +239,7 @@ export default function Home() {
             {/* Right side: Config Panel (resizable, collapsible) */}
             {configOpen && (
               <>
-                <ResizableHandle className="w-px! bg-surface-hover hover:bg-brand/50 transition-colors data-resize-handle-active:bg-brand" />
+                <ResizableHandle className="w-px! bg-b-strong hover:bg-brand transition-colors data-resize-handle-active:bg-brand" />
                 <ResizablePanel
                   defaultSize={"30%"}
                   minSize={"20%"}
