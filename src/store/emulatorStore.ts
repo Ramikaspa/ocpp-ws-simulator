@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 // ─── Connection / Connector Status Types ─────────────────────────────────────
 
@@ -878,7 +878,8 @@ const updateRuntime = (
 
 // A first-time visitor has nothing persisted, so the initial slot must already
 // be the active one — otherwise nothing is selected and edits go nowhere.
-const initialSlot = makeDefaultSlot(1);
+// Fixed id: the server HTML and the browser's first render must match.
+const initialSlot: ChargerSlot = { ...makeDefaultSlot(1), id: "charger-1" };
 
 export const useEmulatorStore = create<EmulatorStore>()(
   persist(
@@ -1429,6 +1430,19 @@ export const useEmulatorStore = create<EmulatorStore>()(
     {
       name: "ocpp-emulator-storage",
       version: 3,
+      // Saved state is restored right after the first render (EmulatorApp),
+      // so the server-rendered HTML and the browser's first frame match.
+      skipHydration: true,
+      // Never write before that restore: a store update during the first
+      // render would otherwise replace the user's saved chargers with defaults.
+      storage: createJSONStorage(() => ({
+        getItem: (name) => localStorage.getItem(name),
+        setItem: (name, value) => {
+          if (useEmulatorStore.persist.hasHydrated())
+            localStorage.setItem(name, value);
+        },
+        removeItem: (name) => localStorage.removeItem(name),
+      })),
       // Only persist config + profiles per charger slot — NOT runtime state (logs/connectors)
       partialize: (s) => ({
         chargers: s.chargers.map((c) => ({

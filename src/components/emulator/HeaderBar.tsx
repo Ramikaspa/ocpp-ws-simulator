@@ -11,6 +11,7 @@ import { GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Blocks,
+  BookOpen,
   EllipsisVertical,
   ExternalLink,
   Globe,
@@ -24,6 +25,7 @@ import {
   WifiOff,
   Zap,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/emulator/AuthGate";
 import { LocalhostGuideDialog } from "@/components/emulator/LocalhostGuideDialog";
@@ -367,6 +369,30 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
             <Tooltip>
               <TooltipTrigger
                 render={
+                  <Link
+                    href="/ocpp-simulator"
+                    aria-label="OCPP guides"
+                    className={buttonVariants({
+                      variant: "neutral",
+                      size: isWide && !isConnected ? "sm" : "icon",
+                    })}
+                  >
+                    <BookOpen aria-hidden="true" />
+                    {isWide && !isConnected && <span>Guides</span>}
+                  </Link>
+                }
+              />
+              <TooltipContent side="bottom">
+                OCPP guides
+                <p className="mt-0.5 text-2xs text-t-muted">
+                  How-tos for OCPP 1.6J, 2.0.1 and Node.js
+                </p>
+              </TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger
+                render={
                   <a
                     href={ECOSYSTEM_URL}
                     target="_blank"
@@ -519,6 +545,9 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
                 <Keyboard aria-hidden="true" /> Keyboard shortcuts
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuItem render={<Link href="/ocpp-simulator" />}>
+                <BookOpen aria-hidden="true" /> OCPP guides
+              </DropdownMenuItem>
               <DropdownMenuItem
                 render={
                   <a

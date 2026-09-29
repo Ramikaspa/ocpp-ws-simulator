@@ -13,7 +13,7 @@ A modern, open-source web UI for simulating one or more EV charge points against
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen?style=flat-square&logo=node.js)](https://nodejs.org)
 
-[Live Demo](https://ocpp.rohittiwari.me) · [ocpp-ws-io Docs](https://ocpp-ws-io.rohittiwari.me) · [Report a Bug](https://github.com/rohittiwaridev/ocpp-ws-simulator/issues)
+[Live Demo](https://ocpp.rohittiwari.me) · [Guides](https://ocpp.rohittiwari.me/ocpp-simulator) · [ocpp-ws-io Docs](https://ocpp-ws-io.rohittiwari.me) · [Report a Bug](https://github.com/rohittiwari-dev/ocpp-ws-simulator/issues)
 
 </div>
 
@@ -44,7 +44,7 @@ This simulator is a critical part of the broader `ocpp-ws-io` ecosystem, designe
 | -------------------------------------------------------------------------- | ---------------------------------------- | ------------ |
 | [`ocpp-ws-io`](https://github.com/rohittiwari-dev/ocpp-ws-io)              | Core OCPP WebSocket RPC client & server  | ✅ Published |
 | [`ocpp-ws-cli`](https://www.npmjs.com/package/ocpp-ws-cli)                 | CLI for generation, simulation & testing | ✅ Published |
-| [`ocpp-ws-simulator`](https://github.com/rohittiwaridev/ocpp-ws-simulator) | Visual web UI emulator (This Repo)       | ✅ Active    |
+| [`ocpp-ws-simulator`](https://github.com/rohittiwari-dev/ocpp-ws-simulator) | Visual web UI emulator (This Repo)       | ✅ Active    |
 
 ## Quick Start
 
@@ -73,7 +73,7 @@ npx ocpp-ws-cli
 This repository is standalone — no monorepo setup required.
 
 ```bash
-git clone https://github.com/rohittiwaridev/ocpp-ws-simulator.git
+git clone https://github.com/rohittiwari-dev/ocpp-ws-simulator.git
 cd ocpp-ws-simulator
 npm install
 npm run dev
@@ -91,8 +91,13 @@ NEXT_PUBLIC_ALLOW_AUTH="true"
 ALLOW_AUTH="true"
 
 # Credentials (used when ALLOW_AUTH=true)
-USERNAME="your_username"
-PASSWORD="your_password"
+MASTER_USERNAME="your_username"
+MASTER_PASSWORD="your_password"
+
+# Search engine verification (optional — meta tag content from each console)
+NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION=""
+NEXT_PUBLIC_BING_SITE_VERIFICATION=""
+NEXT_PUBLIC_YANDEX_VERIFICATION=""
 ```
 
 ## Usage
@@ -107,7 +112,7 @@ PASSWORD="your_password"
 
 | Layer         | Tech                                            |
 | ------------- | ----------------------------------------------- |
-| Framework     | [Next.js 15](https://nextjs.org) (App Router)   |
+| Framework     | [Next.js 16](https://nextjs.org) (App Router)   |
 | Engine        | [ocpp-ws-io](https://ocpp-ws-io.rohittiwari.me) |
 | Styling       | Tailwind CSS v4                                 |
 | State         | Zustand                                         |
@@ -115,7 +120,7 @@ PASSWORD="your_password"
 
 ## Search Keywords
 
-`ocpp` `ev-charging` `simulator` `ocpp-simulator` `charge-point-emulator` `evse` `csms` `ocpp-1.6` `ocpp-2.0.1` `ocpp-2.1` `websocket` `typescript` `open-source` `react` `nextjs`
+`ocpp` `ev-charging` `ocpp-emulator` `ev-charger-emulator` `simulator` `ocpp-simulator` `charge-point-emulator` `evse` `csms` `ocpp-1.6` `ocpp-2.0.1` `ocpp-2.1` `websocket` `typescript` `open-source` `react` `nextjs`
 
 ## Contributing
 

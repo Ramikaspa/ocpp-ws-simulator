@@ -1,7 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AUTHOR, DEFAULT_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -9,46 +10,71 @@ const inter = Inter({
   display: "swap",
 });
 
-const BASE_URL = "https://ocpp.rohittiwari.me";
+/** Search-console ownership tokens, set per deployment (see .env.example). */
+const verification: Metadata["verification"] = {
+  google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION || undefined,
+  yandex: process.env.NEXT_PUBLIC_YANDEX_VERIFICATION || undefined,
+  other: process.env.NEXT_PUBLIC_BING_SITE_VERIFICATION
+    ? { "msvalidate.01": process.env.NEXT_PUBLIC_BING_SITE_VERIFICATION }
+    : undefined,
+};
 
+export const viewport: Viewport = {
+  themeColor: "#0f1117",
+  colorScheme: "dark",
+  width: "device-width",
+  initialScale: 1,
+};
+
+// Canonical URLs and og:url are set per page: a canonical here would be
+// inherited by every page and point them all at the home page.
 export const metadata: Metadata = {
-  metadataBase: new URL(BASE_URL),
+  metadataBase: new URL(SITE_URL),
   title: {
-    default: "OCPP WS Simulator",
-    template: "%s | ocpp-ws-simulator",
+    default: `${SITE_NAME} — Free OCPP Simulator & Emulator`,
+    template: `%s · ${SITE_NAME}`,
   },
-  description:
-    "A modern, open-source OCPP 1.6 / 2.0.1 / 2.1 charge point emulator built on ocpp-ws-io. Test your CSMS with realistic connector simulations, diagnostics, meter values, reservations, and real-time OCPP message logs.",
+  description: DEFAULT_DESCRIPTION,
+  applicationName: SITE_NAME,
+  category: "technology",
   keywords: [
-    "OCPP Simulator",
-    "OCPP Emulator",
-    "Charge Point Emulator",
-    "OCPP 1.6 Simulator",
-    "OCPP 2.0.1 Emulator",
-    "Open Charge Point Protocol Simulator",
-    "CSMS Testing",
-    "EV Charging Simulator",
-    "EVSE Emulator",
+    "OCPP emulator",
+    "OCPP simulator",
+    "EV charger emulator",
+    "EV charger simulator",
+    "EV charging simulator",
+    "EV simulator",
+    "charge point emulator",
+    "charge point simulator",
+    "charging station emulator",
+    "charging station simulator",
+    "EVSE emulator",
+    "EVSE simulator",
+    "virtual charge point",
+    "OCPP 1.6 emulator",
+    "OCPP 1.6 simulator",
+    "OCPP 1.6J",
+    "OCPP 2.0.1 emulator",
+    "OCPP 2.0.1 simulator",
+    "OCPP 2.1",
+    "OCPP-J",
+    "OCPP WebSocket",
+    "OCPP test tool",
+    "CSMS testing",
+    "test OCPP server",
+    "OCPP load testing",
+    "OCPP Node.js",
+    "OCPP TypeScript",
+    "OCPP RPC",
+    "ocpp-rpc",
     "ocpp-ws-io",
-    "WebSocket",
-    "OCPP Testing Tool",
-    "OCPP Client",
-    "EV Charging",
-    "TypeScript",
-    "Next.js",
-    "OCPP Server",
-    "OCPP Library Node.js",
-    "Open Charge Point Protocol Docs",
-    "CSMS Framework",
-    "Test CSMS",
-    "Test OCPP Server",
-    "WebSocket Testing",
-    "ocpp-ws-io Docs",
-    "OCPP Documentation",
+    "Open Charge Point Protocol",
   ],
-  authors: [{ name: "Rohit Tiwari", url: "https://rohittiwari.me" }],
-  creator: "Rohit Tiwari",
-  publisher: "Rohit Tiwari",
+  authors: [{ name: AUTHOR.name, url: AUTHOR.url }],
+  creator: AUTHOR.name,
+  publisher: AUTHOR.name,
+  formatDetection: { telephone: false, email: false, address: false },
+  verification,
 
   /* ── Indexing ── */
   robots: {
@@ -59,32 +85,24 @@ export const metadata: Metadata = {
       follow: true,
       "max-image-preview": "large",
       "max-snippet": -1,
+      "max-video-preview": -1,
     },
   },
 
-  /* ── Open Graph ── */
+  /* ── Social previews (images come from opengraph-image files) ── */
   openGraph: {
     type: "website",
     locale: "en_US",
-    url: BASE_URL,
-    siteName: "ocpp-ws-simulator",
-    title: "OCPP WS Simulator | Real-Time Charge Point Emulator",
-    description:
-      "Test your CSMS with a realistic OCPP charge point emulator. Supports OCPP 1.6, 2.0.1, 2.1 — built on ocpp-ws-io.",
+    siteName: SITE_NAME,
+    title: `${SITE_NAME} — Free OCPP Simulator & Emulator`,
+    description: DEFAULT_DESCRIPTION,
   },
-
-  /* ── Twitter / X ── */
   twitter: {
     card: "summary_large_image",
-    title: "OCPP WS Simulator | Real-Time Charge Point Emulator",
-    description:
-      "An open-source OCPP 1.6/2.0.1/2.1 charge point emulator for testing CSMS backends.",
-    creator: "@rohittiwari_dev",
-  },
-
-  /* ── Canonical ── */
-  alternates: {
-    canonical: BASE_URL,
+    title: `${SITE_NAME} — Free OCPP Simulator & Emulator`,
+    description: DEFAULT_DESCRIPTION,
+    creator: AUTHOR.xHandle,
+    site: AUTHOR.xHandle,
   },
 };
 
