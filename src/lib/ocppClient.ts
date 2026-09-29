@@ -2935,6 +2935,7 @@ class OCPPService {
     const {
       autoChargeDurationSec,
       autoChargeTargetKWh,
+      autoChargeTargetSocPct = 100,
       autoChargeMeterIncrement,
     } = slot.config.simulation;
     const meterInterval = parseInt(
@@ -2967,7 +2968,9 @@ class OCPPService {
       // The target is energy for this session; the register itself keeps
       // counting across sessions.
       const deliveredWh = newMeter - current.startMeterValue;
-      const targetWh = autoChargeTargetKWh * 1000;
+      // Stop at the target SoC: a share of the battery capacity.
+      const targetWh =
+        autoChargeTargetKWh * 1000 * (autoChargeTargetSocPct / 100);
       if (deliveredWh >= targetWh || elapsed >= autoChargeDurationSec) {
         if (this.autoChargeTimers[connectorId]) {
           clearInterval(this.autoChargeTimers[connectorId]);

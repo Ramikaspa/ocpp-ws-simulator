@@ -195,7 +195,10 @@ export interface SimulationConfig {
   diagnosticStatus: "Uploaded" | "UploadFailed";
   firmwareStatus: string;
   // Auto charging
+  /** EV battery capacity; SoC is measured against it. */
   autoChargeTargetKWh: number;
+  /** Auto charge stops once SoC reaches this percentage of the capacity. */
+  autoChargeTargetSocPct: number;
   autoChargeDurationSec: number;
   autoChargeMeterIncrement: number;
   // Measurands
@@ -575,6 +578,7 @@ const DEFAULT_SIMULATION: SimulationConfig = {
   diagnosticStatus: "Uploaded",
   firmwareStatus: "Downloaded",
   autoChargeTargetKWh: 30,
+  autoChargeTargetSocPct: 100,
   autoChargeDurationSec: 120,
   autoChargeMeterIncrement: 250,
   measurands: DEFAULT_MEASURANDS,

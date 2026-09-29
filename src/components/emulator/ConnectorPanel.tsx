@@ -19,6 +19,7 @@ import {
   PlugZap,
   Plus,
   PowerOff,
+  RotateCcw,
   Send,
   ShieldCheck,
   Square,
@@ -27,19 +28,12 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useActiveCharger } from "@/hooks/useActiveCharger";
 import { ocppService } from "@/lib/ocppClient";
 import { cn } from "@/lib/utils";
@@ -53,6 +47,8 @@ import {
   IconButton,
   Notice,
   OptionSelect,
+  PanelDialog,
+  PanelSection,
   RenameAction,
   SectionHeading,
 } from "./kit";
@@ -63,6 +59,20 @@ import {
    ────────────────────────────────── */
 
 type Tone = "success" | "info" | "brand" | "warning" | "neutral" | "danger";
+
+const DEFAULT_TARGET_KWH = 30;
+const EV_PRESETS = [
+  { label: "PHEV", kwh: 18 },
+  { label: "City EV", kwh: 30 },
+  { label: "Sedan", kwh: 60 },
+  { label: "SUV", kwh: 77 },
+  { label: "Truck", kwh: 100 },
+];
+const SOC_LIMITS = [
+  { pct: 80, label: "Daily" },
+  { pct: 90, label: "Standard" },
+  { pct: 100, label: "Full trip" },
+];
 
 const STATUS_TONE: Record<ConnectorStatus, Tone> = {
   Available: "success",
@@ -151,7 +161,19 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
   const [targetKWhInput, setTargetKWhInput] = useState(
     String(config.simulation.autoChargeTargetKWh),
   );
-  const [targetSocPercent, setTargetSocPercent] = useState<number>(100);
+  const [targetSocPercent, setTargetSocPercent] = useState<number>(
+    config.simulation.autoChargeTargetSocPct ?? 100,
+  );
+  const targetInputRef = useRef<HTMLInputElement>(null);
+  const targetKWh = Number(targetKWhInput.trim());
+  const targetValid =
+    targetKWhInput.trim() !== "" &&
+    Number.isFinite(targetKWh) &&
+    targetKWh >= 1 &&
+    targetKWh <= 500;
+  const cutoffKWh = targetValid ? (targetKWh * targetSocPercent) / 100 : 0;
+  const presetValue =
+    EV_PRESETS.find((p) => p.kwh === targetKWh)?.kwh.toString() ?? null;
 
   useEffect(() => {
     setTargetKWhInput(String(config.simulation.autoChargeTargetKWh));
@@ -371,13 +393,21 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
                       setTargetKWhInput(
                         String(config.simulation.autoChargeTargetKWh),
                       );
+                      setTargetSocPercent(
+                        config.simulation.autoChargeTargetSocPct ?? 100,
+                      );
                       setTargetSocOpen(true);
                     }}
                     className="inline-flex items-center gap-1.5 font-semibold text-t-primary hover:text-brand hover:underline cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 rounded px-1 py-0.5"
                     title="Configure vehicle target energy / battery capacity"
                     aria-label={`Target: ${config.simulation.autoChargeTargetKWh} kWh. Click to configure vehicle need.`}
                   >
-                    <span>{config.simulation.autoChargeTargetKWh} kWh</span>
+                    <span>
+                      {config.simulation.autoChargeTargetKWh} kWh
+                      {(config.simulation.autoChargeTargetSocPct ?? 100) <
+                        100 &&
+                        ` · stop ${config.simulation.autoChargeTargetSocPct}%`}
+                    </span>
                     <Pencil
                       className="size-3 text-t-muted hover:text-brand transition-colors"
                       aria-hidden="true"
@@ -938,205 +968,178 @@ export function ConnectorPanel({ connectorId }: { connectorId: number }) {
         </div>
       </div>
 
-      {/* ── Vehicle Charging Need & Target SoC Modal (ISO 9241 & WCAG 2.1 AA) ── */}
-      <Dialog open={targetSocOpen} onOpenChange={setTargetSocOpen}>
-        <DialogContent
-          className="sm:max-w-md bg-surface-elevated border border-b-strong text-t-primary shadow-2xl"
-          showCloseButton
-        >
-          <DialogHeader>
-            <div className="flex items-center gap-2.5">
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-b-strong bg-surface-inset text-brand">
-                <Battery className="size-4.5" aria-hidden="true" />
-              </div>
-              <div>
-                <DialogTitle className="text-sm font-semibold text-t-primary">
-                  Vehicle Charging Need & Target SoC
-                </DialogTitle>
-                <DialogDescription className="text-2xs text-t-muted">
-                  Configure simulated EV battery capacity and target energy for
-                  Connector {connectorId}.
-                </DialogDescription>
-              </div>
-            </div>
-          </DialogHeader>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const val = parseFloat(targetKWhInput);
-              if (!Number.isNaN(val) && val > 0) {
-                updateSimulation({ autoChargeTargetKWh: val });
-                setTargetSocOpen(false);
-              }
-            }}
-            className="mt-1 flex flex-col gap-4"
-          >
-            {/* Target Capacity Input */}
-            <Field
-              label="EV Battery Capacity / Target Energy (kWh)"
-              hint="Defines the denominator for State of Charge (SoC%) and the cutoff target for auto-charging."
-              htmlFor={`${uid}-target-kwh`}
+      {/* ── Vehicle battery & charge target ── */}
+      <PanelDialog
+        open={targetSocOpen}
+        onOpenChange={setTargetSocOpen}
+        size="lg"
+        icon={<Battery aria-hidden="true" />}
+        title="Vehicle battery & charge target"
+        description={`Connector ${connectorId}. State of charge is measured against the battery size; auto charge stops at the target.`}
+        initialFocus={targetInputRef}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!targetValid) return;
+          updateSimulation({
+            autoChargeTargetKWh: targetKWh,
+            autoChargeTargetSocPct: targetSocPercent,
+          });
+          setTargetSocOpen(false);
+        }}
+        footer={
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="sm:mr-auto"
+              onClick={() => {
+                setTargetKWhInput(String(DEFAULT_TARGET_KWH));
+                setTargetSocPercent(100);
+              }}
             >
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Input
-                    id={`${uid}-target-kwh`}
-                    type="number"
-                    step="0.5"
-                    min="1"
-                    max="500"
-                    value={targetKWhInput}
-                    onChange={(e) => setTargetKWhInput(e.target.value)}
-                    placeholder="e.g. 60"
-                    className="h-9 font-mono pr-12 text-sm"
-                    autoFocus
-                  />
-                  <span className="pointer-events-none absolute right-3 top-2.5 text-xs font-semibold text-t-muted">
-                    kWh
-                  </span>
-                </div>
-                <span className="font-mono text-2xs text-t-muted">
-                  ={" "}
-                  {((parseFloat(targetKWhInput) || 0) * 1000).toLocaleString()}{" "}
-                  Wh
-                </span>
-              </div>
-            </Field>
-
-            {/* EV Presets */}
-            <div className="flex flex-col gap-1.5">
-              <span className="text-2xs font-semibold uppercase tracking-wider text-t-muted">
-                Quick EV Vehicle Presets
-              </span>
-              <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
-                {[
-                  { label: "PHEV", kwh: 18 },
-                  { label: "City EV", kwh: 30 },
-                  { label: "Sedan", kwh: 60 },
-                  { label: "SUV / Long", kwh: 77 },
-                  { label: "Truck / Semi", kwh: 100 },
-                ].map((preset) => {
-                  const isSelected = parseFloat(targetKWhInput) === preset.kwh;
-                  return (
-                    <button
-                      key={preset.kwh}
-                      type="button"
-                      onClick={() => setTargetKWhInput(String(preset.kwh))}
-                      className={cn(
-                        "flex flex-col items-center justify-center p-2 rounded-lg border text-center transition-all cursor-pointer min-h-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1",
-                        isSelected
-                          ? "border-brand bg-brand-subtle text-brand-strong ring-1 ring-brand font-semibold"
-                          : "border-b-subtle bg-surface-card hover:bg-surface-hover hover:border-b-strong text-t-secondary hover:text-t-primary",
-                      )}
-                    >
-                      <span className="font-mono text-xs font-bold">
-                        {preset.kwh}
-                      </span>
-                      <span className="text-2xs text-t-muted tracking-tight">
-                        {preset.label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Target SoC Percentage Multipliers (ISO 15118 & OCPP standard) */}
-            <div className="rounded-lg border border-b-subtle bg-surface-card p-3 flex flex-col gap-2">
-              <div className="flex items-center justify-between text-2xs">
-                <span className="font-semibold text-t-secondary flex items-center gap-1">
-                  <Gauge className="size-3 text-brand" aria-hidden="true" />{" "}
-                  Target SoC Limit
-                </span>
-                <span className="font-mono text-t-muted">
-                  {targetSocPercent}% (
-                  {(
-                    (parseFloat(targetKWhInput) || 0) *
-                    (targetSocPercent / 100)
-                  ).toFixed(1)}{" "}
-                  kWh cutoff target)
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {[
-                  { pct: 80, label: "80% (Daily / Battery Health)" },
-                  { pct: 90, label: "90% (Standard)" },
-                  { pct: 100, label: "100% (Full Trip)" },
-                ].map((item) => (
-                  <button
-                    key={item.pct}
-                    type="button"
-                    onClick={() => {
-                      setTargetSocPercent(item.pct);
-                    }}
-                    className={cn(
-                      "flex-1 py-1.5 px-2 rounded-md text-2xs font-medium border text-center transition-colors cursor-pointer min-h-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1",
-                      targetSocPercent === item.pct
-                        ? "border-brand/40 bg-brand/10 text-brand-strong font-semibold"
-                        : "border-b-subtle bg-surface-inset text-t-secondary hover:text-t-primary hover:bg-surface-hover",
-                    )}
-                  >
-                    {item.pct}%
-                  </button>
-                ))}
-              </div>
-              <p className="text-2xs text-t-muted leading-relaxed">
-                {targetSocPercent < 100
-                  ? `Simulates vehicle cutoff at ${targetSocPercent}% SoC to optimize battery longevity (common DC fast charging practice).`
-                  : "Simulates full charge to 100% SoC before stopping the transaction."}
-              </p>
-            </div>
-
-            {/* Live Session Energy Feedback if in transaction */}
-            {inTx && (
-              <div className="flex items-center justify-between text-2xs rounded-lg border border-brand/20 bg-brand/5 px-3 py-2 text-t-secondary">
-                <span>Current Session Delivered:</span>
-                <span className="font-mono font-semibold text-t-primary">
-                  {sessionKWh.toFixed(2)} kWh (
-                  {(sessionKWh * 1000).toLocaleString()} Wh)
-                </span>
-              </div>
-            )}
-
-            {/* Dialog Footer Actions */}
-            <DialogFooter className="mt-2 flex items-center justify-between gap-2 sm:justify-between">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setTargetKWhInput("30");
-                  setTargetSocPercent(100);
-                }}
-                className="text-xs"
+              <RotateCcw aria-hidden="true" /> Reset to defaults
+            </Button>
+            <Button
+              type="button"
+              variant="neutral"
+              size="sm"
+              onClick={() => setTargetSocOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={!targetValid}>
+              Apply
+            </Button>
+          </>
+        }
+      >
+        <PanelSection icon={<Battery aria-hidden="true" />} title="Battery">
+          <Field
+            label="Capacity"
+            htmlFor={`${uid}-target-kwh`}
+            hint={
+              targetValid
+                ? `${(targetKWh * 1000).toLocaleString()} Wh. State of charge is measured against this.`
+                : undefined
+            }
+          >
+            <div className="relative">
+              <Input
+                ref={targetInputRef}
+                id={`${uid}-target-kwh`}
+                inputMode="decimal"
+                autoComplete="off"
+                value={targetKWhInput}
+                onChange={(e) => setTargetKWhInput(e.target.value)}
+                aria-invalid={!targetValid || undefined}
+                aria-describedby={
+                  targetValid ? undefined : `${uid}-target-error`
+                }
+                className="pr-12 font-mono"
+              />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-t-muted"
               >
-                Reset to 30 kWh
-              </Button>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="neutral"
-                  size="sm"
-                  onClick={() => setTargetSocOpen(false)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={
-                    !parseFloat(targetKWhInput) ||
-                    parseFloat(targetKWhInput) <= 0
-                  }
-                >
-                  Apply Target
-                </Button>
-              </div>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+                kWh
+              </span>
+            </div>
+            {!targetValid && (
+              <p
+                id={`${uid}-target-error`}
+                role="alert"
+                className="text-2xs text-danger"
+              >
+                Enter a capacity between 1 and 500 kWh.
+              </p>
+            )}
+          </Field>
+
+          <p
+            id={`${uid}-presets`}
+            className="mt-4 mb-1.5 text-2xs font-semibold uppercase tracking-wider text-t-muted"
+          >
+            Vehicle presets
+          </p>
+          <ToggleGroup
+            aria-labelledby={`${uid}-presets`}
+            variant="outline"
+            spacing={1}
+            value={presetValue ? [presetValue] : []}
+            onValueChange={(v) => v[0] && setTargetKWhInput(v[0])}
+            className="grid w-full grid-cols-3 gap-1.5 sm:grid-cols-5"
+          >
+            {EV_PRESETS.map((p) => (
+              <ToggleGroupItem
+                key={p.kwh}
+                value={String(p.kwh)}
+                variant="outline"
+                aria-label={`${p.label}, ${p.kwh} kWh`}
+                className="h-auto flex-col gap-0 px-1 py-2"
+              >
+                <span className="font-mono text-sm font-semibold">{p.kwh}</span>
+                <span className="text-2xs font-normal text-t-muted">
+                  {p.label}
+                </span>
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </PanelSection>
+
+        <PanelSection
+          icon={<Gauge aria-hidden="true" />}
+          title="Stop auto charge at"
+          action={
+            targetValid && (
+              <span className="font-mono text-2xs text-t-secondary">
+                {cutoffKWh.toFixed(1)} kWh
+              </span>
+            )
+          }
+        >
+          <ToggleGroup
+            aria-label="Target state of charge"
+            variant="outline"
+            spacing={1}
+            value={[String(targetSocPercent)]}
+            onValueChange={(v) => v[0] && setTargetSocPercent(Number(v[0]))}
+            className="grid w-full grid-cols-3 gap-1.5"
+          >
+            {SOC_LIMITS.map((l) => (
+              <ToggleGroupItem
+                key={l.pct}
+                value={String(l.pct)}
+                variant="outline"
+                aria-label={`${l.pct}%, ${l.label}`}
+                className="h-auto flex-col gap-0 px-1 py-2"
+              >
+                <span className="font-mono text-sm font-semibold">
+                  {l.pct}%
+                </span>
+                <span className="text-2xs font-normal text-t-muted">
+                  {l.label}
+                </span>
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <p className="mt-2 text-xs text-t-secondary">
+            {targetSocPercent < 100
+              ? `The vehicle stops drawing power at ${targetSocPercent}% to protect the battery, as is common with DC fast charging.`
+              : "Charges to a full battery before the transaction stops."}
+          </p>
+        </PanelSection>
+
+        {inTx && (
+          <Notice>
+            This session has delivered{" "}
+            <span className="font-mono font-semibold text-t-primary">
+              {sessionKWh.toFixed(2)} kWh
+            </span>{" "}
+            ({socPct.toFixed(1)}% state of charge).
+          </Notice>
+        )}
+      </PanelDialog>
     </section>
   );
 }

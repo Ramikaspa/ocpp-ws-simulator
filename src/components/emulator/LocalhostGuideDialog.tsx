@@ -18,15 +18,8 @@ import {
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -37,7 +30,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useActiveCharger } from "@/hooks/useActiveCharger";
 import { cn } from "@/lib/utils";
-import { IconButton } from "./kit";
+import { Field, IconButton, Notice, PanelDialog, PanelSection } from "./kit";
 
 /* ── Copy Button ── */
 function CopyButton({ text }: { text: string }) {
@@ -58,6 +51,49 @@ function CopyButton({ text }: { text: string }) {
         <Copy aria-hidden="true" />
       )}
     </IconButton>
+  );
+}
+
+/* ── Copyable code line ── */
+function CodeLine({ text }: { text: string }) {
+  return (
+    <span className="mt-1.5 flex items-center gap-2 rounded-md border border-b-default bg-surface-card py-1 pr-1 pl-2.5">
+      <code className="min-w-0 flex-1 truncate font-mono text-xs text-brand-strong">
+        {text}
+      </code>
+      <CopyButton text={text} />
+    </span>
+  );
+}
+
+/* ── Numbered steps ── */
+function Steps({
+  steps,
+}: {
+  steps: { title: string; body: React.ReactNode }[];
+}) {
+  return (
+    <ol className="space-y-3">
+      {steps.map((step, i) => (
+        <li key={step.title} className="flex gap-3">
+          <span
+            aria-hidden="true"
+            className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border border-brand/35 bg-brand-subtle font-mono text-2xs font-semibold text-brand-strong"
+          >
+            {i + 1}
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold text-t-primary">
+              <span className="sr-only">Step {i + 1}: </span>
+              {step.title}
+            </p>
+            <div className="mt-0.5 text-xs leading-relaxed text-t-secondary [&_strong]:font-semibold [&_strong]:text-t-primary">
+              {step.body}
+            </div>
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -277,11 +313,47 @@ export function LocalhostGuideDialog({
     config.endpoint.includes("localhost") ||
     config.endpoint.includes("127.0.0.1");
 
+  const env = isLocalOrigin
+    ? {
+        tone: "success" as const,
+        icon: <CheckCircle2 aria-hidden="true" />,
+        title: "Running locally",
+        text: "Direct connections to ws://localhost are allowed. No browser changes needed.",
+      }
+    : isHttps
+      ? {
+          tone: "warning" as const,
+          icon: <ShieldAlert aria-hidden="true" />,
+          title: "Hosted over HTTPS",
+          text: "Browsers block unencrypted ws:// connections to localhost from HTTPS pages until you allow insecure content for this site.",
+        }
+      : {
+          tone: "info" as const,
+          icon: <Info aria-hidden="true" />,
+          title: "Standard context",
+          text: "Plain http:// pages can usually reach ws://localhost directly.",
+        };
+
+  const testTone =
+    testStatus === "success"
+      ? "success"
+      : testStatus === "blocked"
+        ? "warning"
+        : testStatus === "error"
+          ? "danger"
+          : "info";
+  const testTitle =
+    testStatus === "testing"
+      ? "Testing connection…"
+      : testStatus === "success"
+        ? "Connected"
+        : testStatus === "blocked"
+          ? "Blocked by browser security"
+          : "Connection refused or closed";
+
   return (
-    <Dialog open={isOpen} onOpenChange={setIsOpen}>
-      {hideTrigger ? null : trigger ? (
-        <DialogTrigger render={trigger as React.ReactElement} />
-      ) : (
+    <>
+      {!hideTrigger && !trigger && (
         <Tooltip>
           <TooltipTrigger
             render={
@@ -314,648 +386,39 @@ export function LocalhostGuideDialog({
             }
           />
           <TooltipContent side="bottom">
-            <div className="flex items-center gap-1.5 font-medium">
-              <span>Localhost Guide</span>
-              {isLocalhostActive && (
-                <span className="text-2xs px-1.5 py-0.2 rounded bg-success/20 text-success font-semibold">
-                  Active
-                </span>
-              )}
-            </div>
-            <p className="text-2xs text-t-muted mt-0.5">
-              Browser permissions & local CSMS setup
+            Localhost guide
+            <p className="mt-0.5 text-2xs text-t-muted">
+              Browser permissions and local CSMS setup
             </p>
           </TooltipContent>
         </Tooltip>
       )}
 
-      <DialogContent
-        showCloseButton
-        className="w-[95vw] sm:max-w-2xl bg-surface-card border border-b-strong shadow-2xl rounded-xl p-0 flex flex-col overflow-hidden text-t-primary"
-      >
-        {/* Header */}
-        <DialogHeader className="px-5 py-4 border-b border-b-subtle bg-surface-elevated">
-          <div className="flex items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-b-strong bg-surface-inset text-brand">
-              <Globe className="size-4.5 text-brand" aria-hidden="true" />
-            </div>
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2">
-                <DialogTitle className="text-sm font-semibold text-t-primary">
-                  Connect to Localhost
-                </DialogTitle>
-                <span className="text-2xs font-mono font-medium px-2 py-0.5 rounded-full bg-brand-subtle border border-brand/30 text-brand-strong">
-                  ws://localhost
-                </span>
-              </div>
-              <DialogDescription className="text-2xs text-t-muted">
-                How to connect this simulator directly to your local CSMS
-                backend.
-              </DialogDescription>
-            </div>
-          </div>
-
-          {/* Environment Status Strip */}
-          <div className="mt-3 flex items-center justify-between text-xs px-3.5 py-2 rounded-lg bg-surface-inset border border-b-subtle">
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={cn(
-                  "size-2 rounded-full shrink-0",
-                  isLocalOrigin
-                    ? "bg-success shadow-[0_0_8px_rgba(52,211,153,0.5)]"
-                    : isHttps
-                      ? "bg-warning shadow-[0_0_8px_rgba(251,191,36,0.5)]"
-                      : "bg-info",
-                )}
-                aria-hidden="true"
-              />
-              <span className="text-t-secondary font-mono text-2xs truncate">
-                {originUrl || "Origin"}
-              </span>
-              <span className="text-t-faint text-2xs">•</span>
-              <span className="text-t-primary text-xs font-medium truncate">
-                {isLocalOrigin
-                  ? "Localhost (Direct Access Permitted)"
-                  : isHttps
-                    ? "Hosted HTTPS (Permission Required)"
-                    : "Standard Context"}
-              </span>
-            </div>
-
-            {permissionState === "granted" && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-success/15 text-success border border-success/30 text-2xs font-semibold shrink-0">
-                <Check className="size-3" aria-hidden="true" /> Allowed
-              </span>
-            )}
-          </div>
-        </DialogHeader>
-
-        <Tabs
-          value={activeTab}
-          onValueChange={(v) => setActiveTab(v as typeof activeTab)}
-          className="min-h-0 gap-0"
-        >
-          <div className="px-5 pt-3 pb-0 bg-surface-card">
-            <TabsList
-              aria-label="Guide sections"
-              activateOnFocus
-              className="grid w-full grid-cols-3 h-auto p-1 bg-surface-inset border border-b-subtle rounded-lg"
+      <PanelDialog
+        open={isOpen}
+        onOpenChange={setIsOpen}
+        trigger={
+          !hideTrigger && trigger ? (trigger as React.ReactElement) : undefined
+        }
+        size="xl"
+        icon={<Globe aria-hidden="true" />}
+        title="Connect to a local CSMS"
+        description="Reach a CSMS running on your machine, such as ws://localhost:9000, from this simulator."
+        footer={
+          <>
+            <a
+              href="https://developer.chrome.com/blog/local-network-access"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                buttonVariants({ variant: "link", size: "xs" }),
+                "px-0 sm:mr-auto",
+              )}
             >
-              <TabsTrigger
-                value="permission"
-                className="text-xs font-semibold py-1.5 gap-1.5"
-              >
-                <ShieldCheck aria-hidden="true" />
-                Browser permission
-              </TabsTrigger>
-              <TabsTrigger
-                value="tester"
-                className="text-xs font-semibold py-1.5 gap-1.5"
-              >
-                <Zap aria-hidden="true" />
-                Test connection
-              </TabsTrigger>
-              <TabsTrigger
-                value="tunnel"
-                className="text-xs font-semibold py-1.5 gap-1.5"
-              >
-                <Terminal aria-hidden="true" />
-                Reverse tunnel
-              </TabsTrigger>
-            </TabsList>
-          </div>
-
-          {/* Body Content */}
-          <div className="p-5 overflow-y-auto max-h-[calc(75vh-160px)] space-y-4">
-            {/* TAB 1: BROWSER PERMISSION */}
-            <TabsContent value="permission">
-              <div className="space-y-4">
-                {/* If user is running locally */}
-                {isLocalOrigin ? (
-                  <div className="p-4 rounded-xl bg-surface-inset border border-b-default space-y-2.5">
-                    <div className="flex items-center gap-2 text-success font-semibold text-xs">
-                      <CheckCircle2 className="size-4" aria-hidden="true" />
-                      Running in Local Environment
-                    </div>
-                    <p className="text-xs text-t-secondary leading-relaxed">
-                      Because this simulator is running on{" "}
-                      <code className="text-brand-strong font-mono px-1.5 py-0.5 rounded bg-surface-card border border-b-subtle text-xs">
-                        {originUrl}
-                      </code>
-                      , your browser allows direct WebSocket connections to{" "}
-                      <code className="text-brand-strong font-mono px-1.5 py-0.5 rounded bg-surface-card border border-b-subtle text-xs">
-                        ws://localhost:9000
-                      </code>{" "}
-                      without needing any permission changes or tunnels.
-                    </p>
-                    <div className="pt-1 flex items-center gap-2">
-                      <Button
-                        variant="soft-brand"
-                        size="sm"
-                        onClick={() => setActiveTab("tester")}
-                      >
-                        <Zap aria-hidden="true" /> Test your local CSMS
-                        connection
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  /* When running on hosted HTTPS */
-                  <div className="p-3.5 rounded-xl bg-brand-subtle border border-brand/30 flex items-start gap-2.5 text-xs">
-                    <Info
-                      className="size-4 text-brand shrink-0 mt-0.5"
-                      aria-hidden="true"
-                    />
-                    <p className="text-t-secondary leading-relaxed">
-                      When hosted over HTTPS, browsers block unencrypted
-                      WebSockets (
-                      <code className="text-brand-strong font-mono text-xs">
-                        ws://
-                      </code>
-                      ) to localhost by default. Allow{" "}
-                      <strong className="text-t-primary">
-                        "Insecure content"
-                      </strong>{" "}
-                      in site settings to connect directly with zero proxy or
-                      tunnel.
-                    </p>
-                  </div>
-                )}
-
-                {/* Browser selector pills */}
-                <ToggleGroup
-                  aria-label="Your browser"
-                  size="sm"
-                  spacing={1}
-                  value={[browser]}
-                  onValueChange={(v) =>
-                    v[0] && setBrowser(v[0] as typeof browser)
-                  }
-                  className="rounded-lg border border-b-subtle bg-surface-inset p-1"
-                >
-                  <ToggleGroupItem value="chromium">
-                    <Laptop aria-hidden="true" />
-                    Chrome / Edge / Brave
-                  </ToggleGroupItem>
-                  <ToggleGroupItem value="firefox">Firefox</ToggleGroupItem>
-                  <ToggleGroupItem value="safari">Safari</ToggleGroupItem>
-                </ToggleGroup>
-
-                {/* CHROMIUM INSTRUCTIONS */}
-                {browser === "chromium" && (
-                  <div className="space-y-3">
-                    <div className="rounded-xl border border-b-default bg-surface-inset p-4 space-y-3 text-xs">
-                      {/* Step 1 */}
-                      <div className="flex items-start gap-3">
-                        <div className="size-5 rounded-full bg-brand-subtle border border-brand/30 text-brand-strong flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
-                          1
-                        </div>
-                        <div className="space-y-1">
-                          <p className="font-semibold text-t-primary">
-                            Click the Page Settings icon in the address bar
-                          </p>
-                          <p className="text-xs text-t-secondary leading-relaxed">
-                            In your browser address bar at the top, click the{" "}
-                            <strong className="text-t-primary">Tune (🎛️)</strong>{" "}
-                            or{" "}
-                            <strong className="text-t-primary">
-                              Padlock (🔒)
-                            </strong>{" "}
-                            icon next to the URL &rarr; click{" "}
-                            <strong className="text-t-primary">
-                              Site settings
-                            </strong>
-                            .
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* Step 2 */}
-                      <div className="flex items-start gap-3">
-                        <div className="size-5 rounded-full bg-brand-subtle border border-brand/30 text-brand-strong flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
-                          2
-                        </div>
-                        <div className="space-y-1">
-                          <p className="font-semibold text-t-primary">
-                            Set "Insecure content" to Allow
-                          </p>
-                          <p className="text-xs text-t-secondary leading-relaxed">
-                            Scroll down to{" "}
-                            <strong className="text-t-primary">
-                              Insecure content
-                            </strong>{" "}
-                            and change the dropdown from <em>Block</em> to{" "}
-                            <strong className="text-success">Allow</strong>.
-                            <em>
-                              {" "}
-                              (If "Local network access" is listed, ensure it is
-                              also set to Allow).
-                            </em>
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* Step 3 */}
-                      <div className="flex items-start gap-3">
-                        <div className="size-5 rounded-full bg-brand-subtle border border-brand/30 text-brand-strong flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
-                          3
-                        </div>
-                        <div className="space-y-1">
-                          <p className="font-semibold text-t-primary">
-                            Reload the page & Connect
-                          </p>
-                          <p className="text-xs text-t-secondary leading-relaxed">
-                            Switch back to this simulator tab, refresh, and
-                            click{" "}
-                            <strong className="text-t-primary">Connect</strong>.
-                            Direct connections to{" "}
-                            <code className="text-brand font-mono">
-                              ws://localhost:9000
-                            </code>{" "}
-                            will now work!
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Chrome 142 Prompt note */}
-                    <div className="p-3.5 rounded-xl bg-surface-base border border-b-subtle flex items-center justify-between text-xs">
-                      <div className="space-y-0.5">
-                        <span className="font-semibold text-t-primary flex items-center gap-1.5">
-                          <Zap
-                            className="size-3.5 text-warning"
-                            aria-hidden="true"
-                          />
-                          Chrome 142+ Permission Prompt
-                        </span>
-                        <p className="text-xs text-t-secondary">
-                          If Chrome displays a prompt asking to connect to local
-                          devices, click{" "}
-                          <strong className="text-t-primary">Allow</strong>.
-                        </p>
-                      </div>
-                      <span className="px-2 py-0.5 rounded-full bg-success/15 text-success font-semibold border border-success/30 text-2xs shrink-0">
-                        Auto-prompt
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {/* FIREFOX INSTRUCTIONS */}
-                {browser === "firefox" && (
-                  <div className="p-4 rounded-xl border border-b-default bg-surface-inset space-y-3 text-xs">
-                    <p className="font-semibold text-t-primary text-xs">
-                      Firefox Configuration
-                    </p>
-                    <ol className="list-decimal list-inside space-y-2 text-t-secondary">
-                      <li>
-                        Open a new tab and go to:
-                        <span className="inline-flex items-center gap-1.5 bg-surface-card border border-b-subtle rounded-md px-2 py-0.5 text-xs font-mono text-brand ml-1.5">
-                          about:config
-                          <CopyButton text="about:config" />
-                        </span>
-                      </li>
-                      <li>
-                        Click{" "}
-                        <strong className="text-t-primary">
-                          Accept the Risk and Continue
-                        </strong>
-                        .
-                      </li>
-                      <li>
-                        Search for:
-                        <div className="mt-1 flex items-center gap-1.5 bg-surface-card border border-b-subtle rounded-md px-2.5 py-1 text-xs font-mono text-brand w-fit">
-                          <code>network.websocket.allowInsecureFromHTTPS</code>
-                          <CopyButton text="network.websocket.allowInsecureFromHTTPS" />
-                        </div>
-                      </li>
-                      <li>
-                        Toggle value to{" "}
-                        <strong className="text-success">true</strong> and
-                        reload simulator.
-                      </li>
-                    </ol>
-                  </div>
-                )}
-
-                {/* SAFARI INSTRUCTIONS */}
-                {browser === "safari" && (
-                  <div className="p-4 rounded-xl border border-b-default bg-surface-inset space-y-2.5 text-xs">
-                    <p className="font-semibold text-t-primary text-xs">
-                      Safari Configuration
-                    </p>
-                    <ol className="list-decimal list-inside space-y-1.5 text-t-secondary">
-                      <li>
-                        Go to{" "}
-                        <strong className="text-t-primary">
-                          Safari Settings
-                        </strong>{" "}
-                        &gt;{" "}
-                        <strong className="text-t-primary">Advanced</strong>{" "}
-                        &gt; Check{" "}
-                        <strong className="text-t-primary">
-                          "Show features for web developers"
-                        </strong>
-                        .
-                      </li>
-                      <li>
-                        Under the{" "}
-                        <strong className="text-t-primary">Develop</strong>{" "}
-                        menu, disable local cross-origin restrictions.
-                      </li>
-                      <li>
-                        Or run the simulator locally using{" "}
-                        <code className="text-brand-strong font-mono px-1 py-0.5 rounded bg-surface-card border border-b-subtle text-xs">
-                          npm run dev
-                        </code>{" "}
-                        for zero restrictions.
-                      </li>
-                    </ol>
-                  </div>
-                )}
-              </div>
-            </TabsContent>
-
-            {/* TAB 2: TEST CONNECTION */}
-            <TabsContent value="tester">
-              <div className="space-y-4">
-                <div className="p-4 rounded-xl bg-surface-inset border border-b-default space-y-3.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-t-primary flex items-center gap-2">
-                      <Server
-                        className="size-4 text-warning"
-                        aria-hidden="true"
-                      />
-                      Test Local CSMS Reachability
-                    </span>
-                    <span className="text-xs text-t-secondary truncate max-w-50">
-                      Active:{" "}
-                      <code className="text-brand-strong font-mono">
-                        {config.endpoint}
-                      </code>
-                    </span>
-                  </div>
-
-                  {/* Port Input & Chips */}
-                  <div className="space-y-2">
-                    <label
-                      htmlFor="test-port-input"
-                      className="text-2xs font-semibold text-t-muted uppercase tracking-wider block"
-                    >
-                      Target Port
-                    </label>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="flex items-center gap-1.5 bg-surface-card border border-b-control hover:border-b-strong focus-within:border-brand/70 focus-within:ring-1 focus-within:ring-brand/30 rounded-md pl-3 flex-1 min-w-45 transition-colors">
-                        <span
-                          className="text-xs font-mono text-t-muted select-none"
-                          aria-hidden="true"
-                        >
-                          ws://localhost:
-                        </span>
-                        <Input
-                          id="test-port-input"
-                          inputMode="numeric"
-                          value={testPort}
-                          onChange={(e) => setTestPort(e.target.value)}
-                          placeholder="9000"
-                          className="h-8 border-0 bg-transparent px-0 font-mono text-xs text-t-primary focus-visible:ring-0 focus-visible:outline-none"
-                        />
-                      </div>
-
-                      {["9000", "8080", "8180", "3000", "8887"].map((p) => (
-                        <Button
-                          key={p}
-                          variant={testPort === p ? "soft-brand" : "neutral"}
-                          size="sm"
-                          aria-pressed={testPort === p}
-                          aria-label={`Test port ${p}`}
-                          className="font-mono h-8"
-                          onClick={() => {
-                            setTestPort(p);
-                            runTestConnection(p);
-                          }}
-                        >
-                          :{p}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <Button
-                      size="sm"
-                      disabled={testStatus === "testing"}
-                      onClick={() => runTestConnection(testPort)}
-                    >
-                      {testStatus === "testing" ? (
-                        <>
-                          <RefreshCw
-                            className="size-3.5 animate-spin"
-                            aria-hidden="true"
-                          />
-                          Testing…
-                        </>
-                      ) : (
-                        <>
-                          <Play aria-hidden="true" />
-                          Test WebSocket
-                        </>
-                      )}
-                    </Button>
-
-                    <Button
-                      variant={applied ? "soft-success" : "neutral"}
-                      size="sm"
-                      onClick={() => {
-                        updateConfig({
-                          endpoint: `ws://localhost:${testPort.trim() || "9000"}`,
-                        });
-                        setApplied(true);
-                        setTimeout(() => setApplied(false), 2000);
-                      }}
-                    >
-                      {applied ? (
-                        <>
-                          <Check aria-hidden="true" />
-                          Applied to active charger
-                        </>
-                      ) : (
-                        <>
-                          Apply ws://localhost:
-                          {testPort || "9000"}
-                        </>
-                      )}
-                    </Button>
-                  </div>
-
-                  {/* Test Result */}
-                  {testStatus !== "idle" && (
-                    <div
-                      role="status"
-                      className={`mt-2 p-3.5 rounded-xl border text-xs transition-all ${
-                        testStatus === "testing"
-                          ? "bg-surface-inset border-b-default text-t-secondary"
-                          : testStatus === "success"
-                            ? "bg-success/10 border-success/30 text-t-primary"
-                            : testStatus === "blocked"
-                              ? "bg-warning/10 border-warning/30 text-t-primary"
-                              : "bg-danger/10 border-danger/30 text-t-primary"
-                      }`}
-                    >
-                      <div className="flex items-start gap-2.5">
-                        {testStatus === "testing" && (
-                          <RefreshCw className="size-4 animate-spin text-brand shrink-0 mt-0.5" />
-                        )}
-                        {testStatus === "success" && (
-                          <CheckCircle2 className="size-4 text-success shrink-0 mt-0.5" />
-                        )}
-                        {testStatus === "blocked" && (
-                          <AlertTriangle className="size-4 text-warning shrink-0 mt-0.5" />
-                        )}
-                        {testStatus === "error" && (
-                          <ShieldAlert className="size-4 text-danger shrink-0 mt-0.5" />
-                        )}
-
-                        <div className="space-y-1 flex-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-semibold">
-                              {testStatus === "testing"
-                                ? "Testing connection…"
-                                : testStatus === "success"
-                                  ? "Connected Successfully!"
-                                  : testStatus === "blocked"
-                                    ? "Blocked by Browser Security"
-                                    : "Connection Refused / Closed"}
-                            </span>
-                            {testLatency !== null && (
-                              <span className="font-mono text-xs opacity-75">
-                                {testLatency} ms
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-t-secondary leading-relaxed">
-                            {testMessage}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </TabsContent>
-
-            {/* TAB 3: REVERSE TUNNEL */}
-            <TabsContent value="tunnel">
-              <div className="space-y-3 text-xs">
-                <div className="p-4 rounded-xl bg-surface-inset border border-b-default space-y-1 text-t-secondary">
-                  <p className="font-semibold text-t-primary text-xs flex items-center gap-1.5">
-                    <Terminal
-                      className="size-3.5 text-brand"
-                      aria-hidden="true"
-                    />
-                    When to use a Reverse Tunnel
-                  </p>
-                  <p className="text-xs leading-relaxed">
-                    Use this if your computer is on a restricted corporate
-                    network where browser site permissions cannot be changed.
-                  </p>
-                </div>
-
-                {/* Steps */}
-                <div className="space-y-2.5">
-                  {[
-                    {
-                      num: "1",
-                      title: "Install Ngrok",
-                      command: "npm install -g ngrok",
-                      desc: "Install Ngrok globally or download from ngrok.com",
-                    },
-                    {
-                      num: "2",
-                      title: "Start your CSMS server",
-                      command: "node server.js",
-                      desc: "Make sure your CSMS is running locally on port 9000",
-                    },
-                    {
-                      num: "3",
-                      title: "Create tunnel",
-                      command: "ngrok http 9000",
-                      desc: "Ngrok will provide a public forwarding address",
-                    },
-                    {
-                      num: "4",
-                      title: "Use secure wss:// URL",
-                      command: "wss://xxxx-xx.ngrok-free.app",
-                      desc: "Copy the HTTPS forwarding address and replace https:// with wss://",
-                    },
-                  ].map((step) => (
-                    <div
-                      key={step.num}
-                      className="flex gap-3 p-3.5 rounded-xl bg-surface-inset border border-b-default"
-                    >
-                      <div className="size-5 rounded-full bg-brand-subtle border border-brand/30 flex items-center justify-center text-xs font-bold text-brand-strong shrink-0 mt-0.5">
-                        {step.num}
-                      </div>
-                      <div className="flex-1 space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold text-t-primary text-xs">
-                            {step.title}
-                          </span>
-                          <span className="text-xs text-t-secondary">
-                            {step.desc}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 bg-surface-card border border-b-subtle rounded-md px-2.5 py-1.5">
-                          <code className="flex-1 text-xs font-mono text-brand truncate">
-                            {step.command}
-                          </code>
-                          <CopyButton text={step.command} />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Cloudflare Tunnel alternative */}
-                <div className="p-3.5 rounded-xl bg-surface-inset border border-b-default space-y-1.5">
-                  <span className="font-semibold text-t-primary text-xs">
-                    Cloudflare Tunnel (Alternative)
-                  </span>
-                  <div className="flex items-center gap-1.5 bg-surface-card border border-b-subtle rounded-md px-2.5 py-1.5">
-                    <code className="flex-1 text-xs font-mono text-brand truncate">
-                      cloudflared tunnel --url http://localhost:9000
-                    </code>
-                    <CopyButton text="cloudflared tunnel --url http://localhost:9000" />
-                  </div>
-                </div>
-              </div>
-            </TabsContent>
-          </div>
-
-          {/* Footer */}
-          <div className="px-5 py-3 border-t border-b-subtle bg-surface-elevated flex items-center justify-between text-xs">
-            <div className="flex items-center gap-4 min-w-0">
-              <span className="text-2xs text-t-muted flex items-center gap-1.5 min-w-0">
-                <Info
-                  className="size-3.5 text-t-muted shrink-0"
-                  aria-hidden="true"
-                />
-                <span className="shrink-0">CSMS URL:</span>
-                <span className="font-mono text-t-primary truncate max-w-48">
-                  {config.endpoint}
-                </span>
-              </span>
-              <a
-                href="https://developer.chrome.com/blog/local-network-access"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-2xs text-brand hover:text-brand-strong inline-flex items-center gap-1 transition-colors shrink-0"
-              >
-                Chrome LNA Docs
-                <ExternalLink className="size-3" />
-              </a>
-            </div>
+              Chrome local network access docs
+              <ExternalLink aria-hidden="true" />
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
             <Button
               variant="neutral"
               size="sm"
@@ -963,9 +426,382 @@ export function LocalhostGuideDialog({
             >
               Close
             </Button>
-          </div>
+          </>
+        }
+      >
+        <Notice tone={env.tone} icon={env.icon}>
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-semibold text-t-primary">{env.title}</span>
+            {originUrl && (
+              <span className="font-mono text-2xs text-t-muted">
+                {originUrl}
+              </span>
+            )}
+            {permissionState === "granted" && (
+              <Badge variant="success" className="h-5">
+                <Check aria-hidden="true" /> Allowed
+              </Badge>
+            )}
+          </span>
+          <span className="mt-0.5 block">{env.text}</span>
+        </Notice>
+
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as typeof activeTab)}
+          className="gap-4"
+        >
+          <TabsList
+            aria-label="Guide sections"
+            activateOnFocus
+            className="grid h-auto w-full grid-cols-3 gap-1 bg-transparent p-0"
+          >
+            <TabsTrigger value="permission">
+              <ShieldCheck aria-hidden="true" />
+              Permission
+            </TabsTrigger>
+            <TabsTrigger value="tester">
+              <Zap aria-hidden="true" />
+              Test
+            </TabsTrigger>
+            <TabsTrigger value="tunnel">
+              <Terminal aria-hidden="true" />
+              Tunnel
+            </TabsTrigger>
+          </TabsList>
+
+          {/* ── Browser permission ── */}
+          <TabsContent value="permission" className="space-y-4">
+            {isLocalOrigin ? (
+              <PanelSection
+                icon={<CheckCircle2 aria-hidden="true" />}
+                title="Nothing to change"
+              >
+                <p className="text-xs leading-relaxed text-t-secondary">
+                  This simulator runs on{" "}
+                  <code className="font-mono text-brand-strong">
+                    {originUrl}
+                  </code>
+                  , so the browser already allows connections to{" "}
+                  <code className="font-mono text-brand-strong">
+                    ws://localhost
+                  </code>
+                  .
+                </p>
+                <Button
+                  variant="soft-brand"
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => setActiveTab("tester")}
+                >
+                  <Zap aria-hidden="true" /> Test your local CSMS
+                </Button>
+              </PanelSection>
+            ) : (
+              <PanelSection
+                icon={<Laptop aria-hidden="true" />}
+                title="Allow insecure content"
+              >
+                <ToggleGroup
+                  aria-label="Your browser"
+                  variant="outline"
+                  size="sm"
+                  spacing={1}
+                  value={[browser]}
+                  onValueChange={(v) =>
+                    v[0] && setBrowser(v[0] as typeof browser)
+                  }
+                  className="mb-4 grid w-full grid-cols-3 gap-1"
+                >
+                  <ToggleGroupItem value="chromium" variant="outline">
+                    Chrome / Edge
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="firefox" variant="outline">
+                    Firefox
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="safari" variant="outline">
+                    Safari
+                  </ToggleGroupItem>
+                </ToggleGroup>
+
+                {browser === "chromium" && (
+                  <Steps
+                    steps={[
+                      {
+                        title: "Open site settings",
+                        body: (
+                          <>
+                            Click the <strong>site information</strong> icon
+                            (tune or padlock) at the left of the address bar,
+                            then <strong>Site settings</strong>.
+                          </>
+                        ),
+                      },
+                      {
+                        title: "Allow insecure content",
+                        body: (
+                          <>
+                            Set <strong>Insecure content</strong> to{" "}
+                            <strong>Allow</strong>. If{" "}
+                            <strong>Local network access</strong> is listed,
+                            allow it too.
+                          </>
+                        ),
+                      },
+                      {
+                        title: "Reload and connect",
+                        body: (
+                          <>
+                            Come back to this tab, reload, and select{" "}
+                            <strong>Connect</strong>.
+                          </>
+                        ),
+                      },
+                    ]}
+                  />
+                )}
+                {browser === "firefox" && (
+                  <Steps
+                    steps={[
+                      {
+                        title: "Open the advanced settings",
+                        body: (
+                          <>
+                            In a new tab, go to <CodeLine text="about:config" />{" "}
+                            and accept the risk warning.
+                          </>
+                        ),
+                      },
+                      {
+                        title: "Find the WebSocket setting",
+                        body: (
+                          <CodeLine text="network.websocket.allowInsecureFromHTTPS" />
+                        ),
+                      },
+                      {
+                        title: "Turn it on",
+                        body: (
+                          <>
+                            Set it to <strong>true</strong>, then reload this
+                            page.
+                          </>
+                        ),
+                      },
+                    ]}
+                  />
+                )}
+                {browser === "safari" && (
+                  <Steps
+                    steps={[
+                      {
+                        title: "Enable developer features",
+                        body: (
+                          <>
+                            <strong>Safari Settings</strong> →{" "}
+                            <strong>Advanced</strong> → check{" "}
+                            <strong>Show features for web developers</strong>.
+                          </>
+                        ),
+                      },
+                      {
+                        title: "Relax local restrictions",
+                        body: (
+                          <>
+                            In the <strong>Develop</strong> menu, disable
+                            cross-origin restrictions for local files.
+                          </>
+                        ),
+                      },
+                      {
+                        title: "Or run the simulator locally",
+                        body: <CodeLine text="npm run dev" />,
+                      },
+                    ]}
+                  />
+                )}
+              </PanelSection>
+            )}
+
+            {browser === "chromium" && !isLocalOrigin && (
+              <Notice icon={<Info aria-hidden="true" />}>
+                Chrome 142 and later may also ask to connect to devices on your
+                local network. Choose <strong>Allow</strong>.
+              </Notice>
+            )}
+          </TabsContent>
+
+          {/* ── Test connection ── */}
+          <TabsContent value="tester" className="space-y-4">
+            <PanelSection
+              icon={<Server aria-hidden="true" />}
+              title="Reachability test"
+              action={
+                <span className="max-w-48 truncate font-mono text-2xs text-t-muted">
+                  Current: {config.endpoint}
+                </span>
+              }
+            >
+              <Field label="Port" htmlFor="test-port-input">
+                <div className="flex min-w-0 items-center rounded-md border border-b-control bg-surface-inset pl-3 transition-colors focus-within:border-brand">
+                  <span
+                    aria-hidden="true"
+                    className="font-mono text-xs text-t-muted select-none"
+                  >
+                    ws://localhost:
+                  </span>
+                  <Input
+                    id="test-port-input"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    value={testPort}
+                    onChange={(e) => setTestPort(e.target.value)}
+                    placeholder="9000"
+                    className="border-0 bg-transparent pl-1 font-mono"
+                  />
+                </div>
+              </Field>
+
+              <fieldset className="mt-3">
+                <legend className="mb-1.5 text-2xs font-semibold uppercase tracking-wider text-t-muted">
+                  Common ports
+                </legend>
+                <div className="flex flex-wrap gap-1.5">
+                  {["9000", "8080", "8180", "3000", "8887"].map((p) => (
+                    <Button
+                      key={p}
+                      variant={testPort === p ? "soft-brand" : "neutral"}
+                      size="sm"
+                      aria-pressed={testPort === p}
+                      aria-label={`Test port ${p}`}
+                      className="font-mono"
+                      onClick={() => {
+                        setTestPort(p);
+                        runTestConnection(p);
+                      }}
+                    >
+                      :{p}
+                    </Button>
+                  ))}
+                </div>
+              </fieldset>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  disabled={testStatus === "testing"}
+                  onClick={() => runTestConnection(testPort)}
+                >
+                  {testStatus === "testing" ? (
+                    <>
+                      <RefreshCw className="animate-spin" aria-hidden="true" />
+                      Testing…
+                    </>
+                  ) : (
+                    <>
+                      <Play aria-hidden="true" /> Test WebSocket
+                    </>
+                  )}
+                </Button>
+                <Button
+                  variant={applied ? "soft-success" : "neutral"}
+                  size="sm"
+                  onClick={() => {
+                    updateConfig({
+                      endpoint: `ws://localhost:${testPort.trim() || "9000"}`,
+                    });
+                    setApplied(true);
+                    setTimeout(() => setApplied(false), 2000);
+                  }}
+                >
+                  {applied ? (
+                    <>
+                      <Check aria-hidden="true" /> Applied to active charger
+                    </>
+                  ) : (
+                    <>Use ws://localhost:{testPort || "9000"}</>
+                  )}
+                </Button>
+              </div>
+            </PanelSection>
+
+            <div role="status">
+              {testStatus !== "idle" && (
+                <Notice
+                  tone={testTone}
+                  icon={
+                    testStatus === "testing" ? (
+                      <RefreshCw className="animate-spin" aria-hidden="true" />
+                    ) : testStatus === "success" ? (
+                      <CheckCircle2 aria-hidden="true" />
+                    ) : testStatus === "blocked" ? (
+                      <AlertTriangle aria-hidden="true" />
+                    ) : (
+                      <ShieldAlert aria-hidden="true" />
+                    )
+                  }
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-t-primary">
+                      {testTitle}
+                    </span>
+                    {testLatency !== null && (
+                      <span className="font-mono text-2xs text-t-muted">
+                        {testLatency} ms
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-0.5 block">{testMessage}</span>
+                </Notice>
+              )}
+            </div>
+          </TabsContent>
+
+          {/* ── Reverse tunnel ── */}
+          <TabsContent value="tunnel" className="space-y-4">
+            <Notice icon={<Info aria-hidden="true" />}>
+              Use a tunnel when browser site settings can't be changed, for
+              example on a managed work machine. The simulator then connects
+              over secure <code className="font-mono">wss://</code>.
+            </Notice>
+
+            <PanelSection icon={<Terminal aria-hidden="true" />} title="ngrok">
+              <Steps
+                steps={[
+                  {
+                    title: "Install ngrok",
+                    body: <CodeLine text="npm install -g ngrok" />,
+                  },
+                  {
+                    title: "Start your CSMS on port 9000",
+                    body: <CodeLine text="node server.js" />,
+                  },
+                  {
+                    title: "Open a tunnel",
+                    body: <CodeLine text="ngrok http 9000" />,
+                  },
+                  {
+                    title: "Use the forwarding address with wss://",
+                    body: (
+                      <>
+                        Replace <code className="font-mono">https://</code> with{" "}
+                        <code className="font-mono">wss://</code>, e.g.
+                        <CodeLine text="wss://xxxx-xx.ngrok-free.app" />
+                      </>
+                    ),
+                  },
+                ]}
+              />
+            </PanelSection>
+
+            <PanelSection
+              icon={<Terminal aria-hidden="true" />}
+              title="Cloudflare Tunnel (alternative)"
+            >
+              <CodeLine text="cloudflared tunnel --url http://localhost:9000" />
+            </PanelSection>
+          </TabsContent>
         </Tabs>
-      </DialogContent>
-    </Dialog>
+      </PanelDialog>
+    </>
   );
 }

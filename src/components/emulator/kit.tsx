@@ -41,6 +41,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from "@/components/ui/dialog";
 import {
   FieldDescription,
@@ -443,55 +444,169 @@ export function RenameAction({
         button
       )}
 
-      <Dialog open={isOpen} onOpenChange={setOpen}>
-        <DialogContent
-          className="sm:max-w-sm bg-surface-elevated border border-b-strong text-t-primary"
-          showCloseButton
-        >
-          <form
-            className="flex flex-col gap-4"
-            onSubmit={(e) => {
-              e.preventDefault();
-              onRename(draft.trim());
-              setOpen(false);
-            }}
-          >
-            <DialogHeader>
-              <DialogTitle className="capitalize text-sm font-semibold text-t-primary">
-                Rename {subject}
-              </DialogTitle>
-              <DialogDescription className="text-xs text-t-secondary">
-                Change the display name for this {subject}. Leave empty to
-                restore the default name.
-              </DialogDescription>
-            </DialogHeader>
-
-            <Field label="Name" hint={`Max ${maxLength} characters`}>
-              <Input
-                ref={inputRef}
-                value={draft}
-                maxLength={maxLength}
-                onChange={(e) => setDraft(e.target.value)}
-                className="h-8 text-xs font-medium text-t-primary"
-              />
-            </Field>
-
-            <DialogFooter className="gap-2 sm:gap-2 pt-1">
-              <Button
-                type="button"
-                variant="neutral"
-                size="sm"
-                onClick={() => setOpen(false)}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" size="sm">
-                Save
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <PanelDialog
+        open={isOpen}
+        onOpenChange={setOpen}
+        size="sm"
+        icon={<Pencil aria-hidden="true" />}
+        title={<span className="capitalize">Rename {subject}</span>}
+        description={`Leave empty to go back to the default ${subject} name.`}
+        initialFocus={inputRef}
+        onSubmit={(e) => {
+          e.preventDefault();
+          onRename(draft.trim());
+          setOpen(false);
+        }}
+        footer={
+          <>
+            <Button
+              type="button"
+              variant="neutral"
+              size="sm"
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" size="sm">
+              Save
+            </Button>
+          </>
+        }
+      >
+        <Field label="Name" hint={`Up to ${maxLength} characters.`}>
+          <Input
+            ref={inputRef}
+            value={draft}
+            maxLength={maxLength}
+            onChange={(e) => setDraft(e.target.value)}
+            onFocus={(e) => e.currentTarget.select()}
+          />
+        </Field>
+      </PanelDialog>
     </>
+  );
+}
+
+/* ─────────────────────────────── Panel dialog ─────────────────────────────── */
+
+const PANEL_DIALOG_SIZE = {
+  sm: "sm:max-w-sm",
+  md: "sm:max-w-md",
+  lg: "sm:max-w-lg",
+  xl: "sm:max-w-2xl",
+} as const;
+
+/**
+ * The one modal shell for the app, built from shadcn Dialog and styled like
+ * the side panels: an icon tile + title header, a scrolling body of panel
+ * sections, and a footer bar for actions. With `onSubmit`, body and footer
+ * form a single <form>, so Enter submits and the primary button can be
+ * type="submit".
+ */
+export function PanelDialog({
+  open,
+  onOpenChange,
+  trigger,
+  icon,
+  title,
+  description,
+  children,
+  footer,
+  onSubmit,
+  size = "md",
+  initialFocus,
+  bodyClassName,
+}: {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Element that opens the dialog; omit when controlled via `open`. */
+  trigger?: ReactElement;
+  icon: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
+  children: ReactNode;
+  footer?: ReactNode;
+  onSubmit?: (e: React.FormEvent<HTMLFormElement>) => void;
+  size?: keyof typeof PANEL_DIALOG_SIZE;
+  initialFocus?: React.RefObject<HTMLElement | null>;
+  bodyClassName?: string;
+}) {
+  const body = (
+    <>
+      <div
+        className={cn(
+          "min-h-0 flex-1 space-y-4 overflow-y-auto custom-scrollbar px-5 py-4",
+          bodyClassName,
+        )}
+      >
+        {children}
+      </div>
+      {footer && (
+        <DialogFooter className="shrink-0 items-center border-t border-b-subtle bg-surface-elevated/50 px-5 py-3">
+          {footer}
+        </DialogFooter>
+      )}
+    </>
+  );
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {trigger && <DialogTrigger render={trigger} />}
+      <DialogContent
+        initialFocus={initialFocus}
+        className={cn(
+          "flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0",
+          PANEL_DIALOG_SIZE[size],
+        )}
+      >
+        <DialogHeader className="shrink-0 flex-row items-start gap-3 border-b border-b-subtle px-5 py-4 pr-14">
+          <div className="grid size-8 shrink-0 place-items-center rounded-md bg-primary text-white [&_svg]:size-4">
+            {icon}
+          </div>
+          <div className="min-w-0 space-y-0.5">
+            <DialogTitle>{title}</DialogTitle>
+            {description && (
+              <DialogDescription>{description}</DialogDescription>
+            )}
+          </div>
+        </DialogHeader>
+        {onSubmit ? (
+          <form onSubmit={onSubmit} className="flex min-h-0 flex-1 flex-col">
+            {body}
+          </form>
+        ) : (
+          body
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Panel-style group inside a dialog body: section heading plus an inset
+ * card, matching the config panel's section cards.
+ */
+export function PanelSection({
+  icon,
+  title,
+  action,
+  children,
+  className,
+}: {
+  icon?: ReactNode;
+  title: string;
+  action?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  const id = useId();
+  return (
+    <section aria-labelledby={id} className={className}>
+      <SectionHeading id={id} icon={icon} action={action}>
+        {title}
+      </SectionHeading>
+      <div className="rounded-lg border border-b-default bg-surface-inset p-3">
+        {children}
+      </div>
+    </section>
   );
 }

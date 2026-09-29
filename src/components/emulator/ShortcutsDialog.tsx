@@ -3,18 +3,13 @@
 import { Keyboard } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { IconButton, PanelDialog, SectionHeading } from "./kit";
 
 /* ── Shortcut data ─────────────────────────────────────────────────────────── */
 const GROUPS = [
@@ -96,106 +91,81 @@ export function ShortcutsDialog({
   }, []);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <>
       {!hideTrigger && (
         <Tooltip>
           <TooltipTrigger
             render={
-              <Button
+              <IconButton
+                label="Keyboard shortcuts"
                 variant="neutral"
-                size="icon"
                 onClick={() => setOpen(true)}
-                aria-label="Keyboard shortcuts (Ctrl+/)"
-                className="size-8 rounded-md shrink-0"
               >
-                <Keyboard className="size-4" aria-hidden="true" />
-              </Button>
+                <Keyboard aria-hidden="true" />
+              </IconButton>
             }
           />
           <TooltipContent side="bottom">
-            <div className="flex items-center gap-2 font-medium">
-              <span>Keyboard shortcuts</span>
-              <kbd className="text-2xs font-mono bg-surface-inset px-1 py-0.5 rounded border border-b-strong text-t-muted">
-                Ctrl+/
-              </kbd>
-            </div>
+            Keyboard shortcuts <Kbd className="ml-1">Ctrl+/</Kbd>
           </TooltipContent>
         </Tooltip>
       )}
 
-      <DialogContent
-        showCloseButton
-        className="sm:max-w-lg p-0 overflow-hidden bg-surface-card border border-b-strong rounded-xl shadow-2xl flex flex-col text-t-primary"
+      <PanelDialog
+        open={open}
+        onOpenChange={setOpen}
+        size="xl"
+        icon={<Keyboard aria-hidden="true" />}
+        title="Keyboard shortcuts"
+        description="Everything in the simulator can be done from the keyboard."
+        bodyClassName="gap-4 space-y-0 sm:columns-2 [&>section]:mb-4 [&>section]:break-inside-avoid"
+        footer={
+          <>
+            <p className="text-2xs text-t-muted sm:mr-auto">
+              Press <Kbd>Ctrl+/</Kbd> anywhere to open this list.
+            </p>
+            <Button variant="neutral" size="sm" onClick={() => setOpen(false)}>
+              Close
+            </Button>
+          </>
+        }
       >
-        {/* Header */}
-        <DialogHeader className="px-5 py-4 border-b border-b-subtle bg-surface-elevated">
-          <div className="flex items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-b-strong bg-surface-inset text-brand">
-              <Keyboard className="size-4.5" aria-hidden="true" />
-            </div>
-            <div className="space-y-0.5">
-              <DialogTitle className="text-sm font-semibold text-t-primary">
-                Keyboard Shortcuts
-              </DialogTitle>
-              <DialogDescription className="text-2xs text-t-muted">
-                Quick keyboard navigation and actions across the simulator.
-              </DialogDescription>
-            </div>
-          </div>
-        </DialogHeader>
-
-        {/* Body */}
-        <div className="p-5 space-y-4 overflow-y-auto max-h-[60vh]">
-          {GROUPS.map(({ group, items }) => (
-            <section key={group}>
-              <h3 className="text-2xs font-semibold uppercase tracking-wider mb-2 text-t-muted">
-                {group}
-              </h3>
-              <div className="rounded-lg border border-b-subtle bg-surface-base divide-y divide-b-subtle overflow-hidden">
-                {items.map(({ keys, label }) => (
-                  <div
-                    key={label}
-                    className="flex items-center justify-between gap-3 px-3.5 py-2 hover:bg-surface-hover/50 transition-colors"
-                  >
-                    <span className="text-xs text-t-secondary font-medium">
-                      {label}
-                    </span>
-                    <div className="flex items-center gap-1 shrink-0">
+        {GROUPS.map(({ group, items }) => (
+          <section key={group} aria-label={group}>
+            <SectionHeading>{group}</SectionHeading>
+            <dl className="divide-y divide-b-subtle overflow-hidden rounded-lg border border-b-default bg-surface-inset">
+              {items.map(({ keys, label }) => (
+                <div
+                  key={label}
+                  className="flex items-center justify-between gap-3 px-3 py-2"
+                >
+                  <dt className="text-xs text-t-secondary">{label}</dt>
+                  <dd>
+                    <KbdGroup>
                       {keys.map((k, i) => (
                         <span
                           key={`${k}-${i?.toString()}`}
                           className="flex items-center gap-1"
                         >
-                          <kbd className="px-1.5 py-0.5 rounded font-mono text-2xs font-medium bg-surface-elevated border border-b-strong text-t-primary shadow-xs leading-none">
-                            {k}
-                          </kbd>
+                          <Kbd>{k}</Kbd>
                           {i < keys.length - 1 && (
-                            <span className="text-2xs text-t-muted">+</span>
+                            <span
+                              aria-hidden="true"
+                              className="text-2xs text-t-muted"
+                            >
+                              +
+                            </span>
                           )}
                         </span>
                       ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
-
-        {/* Footer */}
-        <div className="px-5 py-3 border-t border-b-subtle bg-surface-elevated flex items-center justify-between">
-          <span className="text-2xs text-t-muted">
-            Press{" "}
-            <kbd className="font-mono font-medium text-t-primary bg-surface-inset px-1.5 py-0.5 rounded border border-b-strong text-2xs">
-              Ctrl+/
-            </kbd>{" "}
-            anytime to toggle
-          </span>
-          <Button variant="neutral" size="sm" onClick={() => setOpen(false)}>
-            Close
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+                    </KbdGroup>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        ))}
+      </PanelDialog>
+    </>
   );
 }

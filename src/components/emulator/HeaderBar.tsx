@@ -142,8 +142,9 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
     return () => clearInterval(id);
   }, [connectedAt]);
 
-  const runService = (fn: (svc: any) => void) =>
-    import("@/lib/ocppClient").then(({ ocppService }) => fn(ocppService)); // proxy auto-routes to active charger
+  const runService = (
+    fn: (svc: typeof import("@/lib/ocppClient").ocppService) => void,
+  ) => import("@/lib/ocppClient").then(({ ocppService }) => fn(ocppService)); // proxy auto-routes to active charger
 
   const sendBoot = () => runService((s) => s.sendBootNotification());
   const sendHeartbeat = () => runService((s) => s.sendHeartbeat());
