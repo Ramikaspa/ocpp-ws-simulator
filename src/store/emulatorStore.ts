@@ -278,13 +278,30 @@ export interface ChargerSlot {
 export interface EmulatorStore {
   chargers: ChargerSlot[];
   activeChargerId: string;
+  /**
+   * Chargers shown in the tab strip, in tab order — like open files in an
+   * editor. Every charger still exists (and keeps running) when its tab is
+   * closed; the "All chargers" sheet lists them all.
+   */
+  openTabIds: string[];
 
   // ── Tab management ──
   addCharger: () => void;
   removeCharger: (id: string) => void;
+  /**
+   * Deletes every charger and starts over with one fresh default charger.
+   * Callers must drop each charger's service (socket, timers) first.
+   */
+  removeAllChargers: () => void;
   duplicateCharger: (id: string) => void;
+  /** Activates a charger, opening its tab if it is closed. */
   setActiveCharger: (id: string) => void;
   reorderChargers: (fromIndex: number, toIndex: number) => void;
+  /** Hides a tab without deleting the charger. The last tab stays open. */
+  closeTab: (id: string) => void;
+  closeOtherTabs: (id: string) => void;
+  /** Moves a tab to `toIndex` in `openTabIds`. */
+  moveTab: (id: string, toIndex: number) => void;
   updateChargerLabel: (id: string, label: string) => void;
   updateConnectorName: (id: string, connectorId: number, name: string) => void;
 
@@ -864,6 +881,7 @@ export const useEmulatorStore = create<EmulatorStore>()(
     (set, get) => ({
       chargers: [initialSlot],
       activeChargerId: initialSlot.id,
+      openTabIds: [initialSlot.id],
 
       getSlot: (id) => get().chargers.find((c) => c.id === id),
 
@@ -875,6 +893,7 @@ export const useEmulatorStore = create<EmulatorStore>()(
           return {
             chargers: [...s.chargers, next],
             activeChargerId: next.id,
+            openTabIds: [...s.openTabIds, next.id],
           };
         }),
 
@@ -882,12 +901,29 @@ export const useEmulatorStore = create<EmulatorStore>()(
         set((s) => {
           if (s.chargers.length <= 1) return s;
           const filtered = s.chargers.filter((c) => c.id !== id);
-          const activeId =
-            s.activeChargerId === id
-              ? (filtered[filtered.length - 1]?.id ?? "")
-              : s.activeChargerId;
-          return { chargers: filtered, activeChargerId: activeId };
+          let openTabIds = s.openTabIds.filter((t) => t !== id);
+          let activeId = s.activeChargerId;
+          if (activeId === id) {
+            // Like an editor: focus the neighbouring tab, else any charger.
+            const at = s.openTabIds.indexOf(id);
+            activeId =
+              openTabIds[Math.min(at, openTabIds.length - 1)] ??
+              filtered[filtered.length - 1].id;
+          }
+          if (!openTabIds.includes(activeId))
+            openTabIds = [...openTabIds, activeId];
+          return { chargers: filtered, activeChargerId: activeId, openTabIds };
         }),
+
+      removeAllChargers: () => {
+        // The app always needs an active charger, so start over with one.
+        const fresh = makeDefaultSlot(1);
+        set({
+          chargers: [fresh],
+          activeChargerId: fresh.id,
+          openTabIds: [fresh.id],
+        });
+      },
 
       duplicateCharger: (id) =>
         set((s) => {
@@ -911,13 +947,27 @@ export const useEmulatorStore = create<EmulatorStore>()(
             savedProfiles: JSON.parse(JSON.stringify(src.savedProfiles)),
             runtime: makeDefaultRuntime(src.config.rfidTag),
           };
+          // The copy opens right next to its source, as editors do.
+          const openTabIds = [...s.openTabIds];
+          const at = openTabIds.indexOf(id);
+          openTabIds.splice(at < 0 ? openTabIds.length : at + 1, 0, dup.id);
           return {
             chargers: [...s.chargers, dup],
             activeChargerId: dup.id,
+            openTabIds,
           };
         }),
 
-      setActiveCharger: (id) => set({ activeChargerId: id }),
+      setActiveCharger: (id) =>
+        set((s) => {
+          if (!s.chargers.some((c) => c.id === id)) return s;
+          return {
+            activeChargerId: id,
+            openTabIds: s.openTabIds.includes(id)
+              ? s.openTabIds
+              : [...s.openTabIds, id],
+          };
+        }),
 
       reorderChargers: (fromIndex, toIndex) =>
         set((s) => {
@@ -925,6 +975,38 @@ export const useEmulatorStore = create<EmulatorStore>()(
           const [moved] = arr.splice(fromIndex, 1);
           arr.splice(toIndex, 0, moved);
           return { chargers: arr };
+        }),
+
+      closeTab: (id) =>
+        set((s) => {
+          if (s.openTabIds.length <= 1 || !s.openTabIds.includes(id)) return s;
+          const at = s.openTabIds.indexOf(id);
+          const openTabIds = s.openTabIds.filter((t) => t !== id);
+          return {
+            openTabIds,
+            activeChargerId:
+              s.activeChargerId === id
+                ? openTabIds[Math.min(at, openTabIds.length - 1)]
+                : s.activeChargerId,
+          };
+        }),
+
+      closeOtherTabs: (id) =>
+        set((s) =>
+          s.chargers.some((c) => c.id === id)
+            ? { openTabIds: [id], activeChargerId: id }
+            : s,
+        ),
+
+      moveTab: (id, toIndex) =>
+        set((s) => {
+          const from = s.openTabIds.indexOf(id);
+          if (from < 0) return s;
+          const openTabIds = [...s.openTabIds];
+          openTabIds.splice(from, 1);
+          const to = Math.max(0, Math.min(toIndex, openTabIds.length));
+          openTabIds.splice(to, 0, id);
+          return { openTabIds };
         }),
 
       updateChargerLabel: (id, label) =>
@@ -1332,7 +1414,12 @@ export const useEmulatorStore = create<EmulatorStore>()(
               runtime: makeDefaultRuntime(config.rfidTag),
             });
           }
-          return { chargers: [...s.chargers, ...newChargers] };
+          // Fleet chargers open as tabs; ones that don't fit collapse into
+          // the tab strip's overflow menu and the "All chargers" sheet.
+          return {
+            chargers: [...s.chargers, ...newChargers],
+            openTabIds: [...s.openTabIds, ...newChargers.map((c) => c.id)],
+          };
         }),
     }),
     {
@@ -1348,6 +1435,7 @@ export const useEmulatorStore = create<EmulatorStore>()(
           savedProfiles: c.savedProfiles,
         })),
         activeChargerId: s.activeChargerId,
+        openTabIds: s.openTabIds,
       }),
       // Restore runtime state with defaults when loading from storage
       merge: (persisted: any, currentState: EmulatorStore) => {
@@ -1403,6 +1491,7 @@ export const useEmulatorStore = create<EmulatorStore>()(
               },
             ],
             activeChargerId: slot.id,
+            openTabIds: [slot.id],
           };
         }
 
@@ -1471,10 +1560,23 @@ export const useEmulatorStore = create<EmulatorStore>()(
             ? persisted.activeChargerId
             : validChargers[0].id;
 
+        // Open tabs: keep saved ones that still exist. Saves from before
+        // tabs could be closed have none, so every charger opens.
+        const known = new Set(validChargers.map((c) => c.id));
+        let openTabIds: string[] = Array.isArray(persisted.openTabIds)
+          ? persisted.openTabIds.filter(
+              (t: unknown) => typeof t === "string" && known.has(t),
+            )
+          : [];
+        if (openTabIds.length === 0)
+          openTabIds = validChargers.map((c) => c.id);
+        if (!openTabIds.includes(activeId)) openTabIds.push(activeId);
+
         return {
           ...currentState,
           chargers: validChargers,
           activeChargerId: activeId,
+          openTabIds,
         };
       },
     },

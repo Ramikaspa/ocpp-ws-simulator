@@ -67,6 +67,8 @@ export interface LocalhostGuideDialogProps {
   onOpenChange?: (open: boolean) => void;
   trigger?: React.ReactNode;
   iconOnly?: boolean;
+  /** Render only the dialog — opened from a menu item via `open`. */
+  hideTrigger?: boolean;
 }
 
 export function LocalhostGuideDialog({
@@ -74,6 +76,7 @@ export function LocalhostGuideDialog({
   onOpenChange,
   trigger,
   iconOnly = false,
+  hideTrigger = false,
 }: LocalhostGuideDialogProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
   const isControlled = open !== undefined;
@@ -276,7 +279,7 @@ export function LocalhostGuideDialog({
 
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
-      {trigger ? (
+      {hideTrigger ? null : trigger ? (
         <DialogTrigger render={trigger as React.ReactElement} />
       ) : (
         <Tooltip>

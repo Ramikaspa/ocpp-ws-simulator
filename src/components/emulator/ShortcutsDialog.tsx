@@ -1,19 +1,19 @@
 "use client";
 
 import { Keyboard } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogHeader,
-    DialogTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import {
-    Tooltip,
-    TooltipContent,
-    TooltipTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
 } from "@/components/ui/tooltip";
 
 /* ── Shortcut data ─────────────────────────────────────────────────────────── */
@@ -29,11 +29,22 @@ const GROUPS = [
     group: "Charger",
     items: [
       { keys: ["Alt", "C"], label: "New charger" },
+      { keys: ["Alt", "A"], label: "All chargers (search)" },
       { keys: ["Ctrl", "Enter"], label: "Connect / Disconnect" },
       {
         keys: ["Ctrl", "← / →"],
         label: "Switch charger tab",
       },
+    ],
+  },
+  {
+    group: "Charger tabs (tab focused)",
+    items: [
+      { keys: ["← / →"], label: "Move between tabs" },
+      { keys: ["Ctrl", "Shift", "← / →"], label: "Move tab left / right" },
+      { keys: ["F2"], label: "Rename charger" },
+      { keys: ["Delete"], label: "Close tab" },
+      { keys: ["Shift", "F10"], label: "Tab menu" },
     ],
   },
   {
@@ -53,17 +64,32 @@ const GROUPS = [
 ] as const;
 
 /* ── Component ─────────────────────────────────────────────────────────────── */
-export function ShortcutsDialog() {
-  const [open, setOpen] = useState(false);
+export function ShortcutsDialog({
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
+}: {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Render only the dialog — opened from a menu item via `open`. */
+  hideTrigger?: boolean;
+} = {}) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
+  // The global shortcut outlives renders, so read the latest values via refs.
+  const openRef = useRef(open);
+  openRef.current = open;
+  const setOpenRef = useRef(setOpen);
+  setOpenRef.current = setOpen;
 
   /* Ctrl+/ global toggle */
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key === "/") {
         e.preventDefault();
-        setOpen((v) => !v);
+        setOpenRef.current(!openRef.current);
       }
-      if (e.key === "Escape") setOpen(false);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -71,29 +97,31 @@ export function ShortcutsDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              variant="neutral"
-              size="icon"
-              onClick={() => setOpen(true)}
-              aria-label="Keyboard shortcuts (Ctrl+/)"
-              className="size-8 rounded-md shrink-0"
-            >
-              <Keyboard className="size-4" aria-hidden="true" />
-            </Button>
-          }
-        />
-        <TooltipContent side="bottom">
-          <div className="flex items-center gap-2 font-medium">
-            <span>Keyboard shortcuts</span>
-            <kbd className="text-2xs font-mono bg-surface-inset px-1 py-0.5 rounded border border-b-strong text-t-muted">
-              Ctrl+/
-            </kbd>
-          </div>
-        </TooltipContent>
-      </Tooltip>
+      {!hideTrigger && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="neutral"
+                size="icon"
+                onClick={() => setOpen(true)}
+                aria-label="Keyboard shortcuts (Ctrl+/)"
+                className="size-8 rounded-md shrink-0"
+              >
+                <Keyboard className="size-4" aria-hidden="true" />
+              </Button>
+            }
+          />
+          <TooltipContent side="bottom">
+            <div className="flex items-center gap-2 font-medium">
+              <span>Keyboard shortcuts</span>
+              <kbd className="text-2xs font-mono bg-surface-inset px-1 py-0.5 rounded border border-b-strong text-t-muted">
+                Ctrl+/
+              </kbd>
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      )}
 
       <DialogContent
         showCloseButton
@@ -163,11 +191,7 @@ export function ShortcutsDialog() {
             </kbd>{" "}
             anytime to toggle
           </span>
-          <Button
-            variant="neutral"
-            size="sm"
-            onClick={() => setOpen(false)}
-          >
+          <Button variant="neutral" size="sm" onClick={() => setOpen(false)}>
             Close
           </Button>
         </div>

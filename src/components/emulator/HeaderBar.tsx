@@ -1,10 +1,20 @@
 "use client";
 
+/**
+ * App header. Collapses in stages so it never overflows (WCAG 1.4.10
+ * reflow): phone → brand, status, Connect, Settings and a "More" menu;
+ * tablet (sm) adds the title, OCPP version and status text; desktop (lg)
+ * adds the endpoint and inline icon actions; wide (2xl) labels everything.
+ */
+
 import { GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Blocks,
+  EllipsisVertical,
   ExternalLink,
+  Globe,
+  Keyboard,
   Loader2,
   LogOut,
   Power,
@@ -20,10 +30,23 @@ import { LocalhostGuideDialog } from "@/components/emulator/LocalhostGuideDialog
 import { ShortcutsDialog } from "@/components/emulator/ShortcutsDialog";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { BREAKPOINT, useMediaQuery } from "@/hooks/use-media-query";
 import { useActiveCharger } from "@/hooks/useActiveCharger";
 import { cn } from "@/lib/utils";
 import type { ConnectionStatus, EmulatorConfig } from "@/store/emulatorStore";
@@ -31,6 +54,7 @@ import { IconButton, OptionSelect } from "./kit";
 
 const GITHUB_URL = "https://github.com/rohittiwari-dev/ocpp-ws-simulator";
 const ECOSYSTEM_URL = "https://ocpp-ws-io.rohittiwari.me/";
+const AUTH_ENABLED = process.env.NEXT_PUBLIC_ALLOW_AUTH === "true";
 
 /* ── Status config ── */
 type StCfg = { dot: string; text: string; label: string };
@@ -63,6 +87,32 @@ function formatUptime(ms: number) {
   return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`;
 }
 
+/** Icon button with a tooltip — the label doubles as the accessible name. */
+function ToolButton({
+  label,
+  hint,
+  children,
+  ...props
+}: React.ComponentProps<typeof IconButton> & { hint?: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <IconButton label={label} {...props}>
+            {children}
+          </IconButton>
+        }
+      />
+      <TooltipContent side="bottom">
+        {label}
+        {hint && (
+          <kbd className="ml-1.5 font-mono text-2xs text-t-muted">{hint}</kbd>
+        )}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 /* ── Header ── */
 export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
   const { status, config, connectedAt, updateConfig, offlineMode } =
@@ -72,6 +122,13 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
   const isConnecting = status === "connecting";
   const st = ST[status];
   const vLocked = isConnected || isConnecting;
+
+  const isSm = useMediaQuery(BREAKPOINT.sm);
+  const isLg = useMediaQuery(BREAKPOINT.lg);
+  const isWide = useMediaQuery(BREAKPOINT["2xl"]);
+
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const [uptime, setUptime] = useState("");
   useEffect(() => {
@@ -88,11 +145,17 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
   const runService = (fn: (svc: any) => void) =>
     import("@/lib/ocppClient").then(({ ocppService }) => fn(ocppService)); // proxy auto-routes to active charger
 
+  const sendBoot = () => runService((s) => s.sendBootNotification());
+  const sendHeartbeat = () => runService((s) => s.sendHeartbeat());
+  // Goes through the service so going back online actually replays what
+  // was queued while the station was dark.
+  const toggleOffline = () => runService((s) => s.setOfflineMode(!offlineMode));
+
   return (
-    <header className="sticky top-0 z-30 h-14 shrink-0 flex items-center px-4 gap-3 bg-surface-card border-b border-b-subtle">
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-b-subtle bg-surface-card px-3 sm:gap-3 sm:px-4">
       {/* ── Brand ── */}
-      <div className="flex items-center gap-2.5 shrink-0">
-        <div className="size-8 rounded-lg flex items-center justify-center overflow-hidden bg-brand-subtle border border-brand/30 shrink-0">
+      <div className="flex shrink-0 items-center gap-2.5">
+        <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-brand/30 bg-brand-subtle">
           <svg
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 100 100"
@@ -125,68 +188,74 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
             />
           </svg>
         </div>
-        <h1 className="text-sm font-semibold text-t-primary tracking-tight sr-only sm:not-sr-only">
+        <h1 className="sr-only text-sm font-semibold tracking-tight text-t-primary md:not-sr-only md:whitespace-nowrap">
           OCPP WS Simulator
         </h1>
       </div>
 
       <div
-        className="h-6 w-px bg-b-strong shrink-0 hidden sm:block"
+        className="hidden h-6 w-px shrink-0 bg-b-strong md:block"
         aria-hidden="true"
       />
 
-      {/* ── Endpoint (opens connection settings) ── */}
-      <Button
-        variant="neutral"
-        size="sm"
-        onClick={onSettingsOpen}
-        title="Edit connection settings"
-        className={cn(
-          "hidden md:flex min-w-0 bg-surface-inset font-normal",
-          isConnected ? "max-w-xs xl:max-w-sm" : "max-w-sm",
-        )}
-      >
-        <span className="sr-only">Connection settings: </span>
-        <span className="text-xs font-mono text-t-secondary truncate">
-          {config.endpoint}/
-          <span className="text-brand-strong">{config.chargePointId}</span>
-        </span>
-      </Button>
-
-      {/* ── OCPP Version ── */}
-      <div
-        className="w-32 shrink-0"
-        title={
-          vLocked ? "Disconnect first to change the OCPP version" : undefined
-        }
-      >
-        <OptionSelect
+      {/* ── Endpoint (opens connection settings) — desktop ── */}
+      {isLg && (
+        <Button
+          variant="neutral"
           size="sm"
-          aria-label="OCPP version"
-          value={config.ocppVersion}
-          options={VERSIONS}
-          disabled={vLocked}
-          onChange={(v) => updateConfig({ ocppVersion: v })}
-          className="font-mono"
-        />
-      </div>
+          onClick={onSettingsOpen}
+          title="Edit connection settings"
+          className={cn(
+            "min-w-0 bg-surface-inset font-normal",
+            isConnected && !isWide ? "max-w-56" : "max-w-xs 2xl:max-w-sm",
+          )}
+        >
+          <span className="sr-only">Connection settings: </span>
+          <span className="truncate font-mono text-xs text-t-secondary">
+            {config.endpoint}/
+            <span className="text-brand-strong">{config.chargePointId}</span>
+          </span>
+        </Button>
+      )}
 
-      {/* ── Spacer ── */}
-      <div className="flex-1" />
+      {/* ── OCPP Version — tablet and up (in the More menu on phones) ── */}
+      {isSm && (
+        <div
+          className="w-28 shrink-0 md:w-32"
+          title={
+            vLocked ? "Disconnect first to change the OCPP version" : undefined
+          }
+        >
+          <OptionSelect
+            size="sm"
+            aria-label="OCPP version"
+            value={config.ocppVersion}
+            options={VERSIONS}
+            disabled={vLocked}
+            onChange={(v) => updateConfig({ ocppVersion: v })}
+            className="font-mono"
+          />
+        </div>
+      )}
+
+      <div className="min-w-0 flex-1" />
 
       {/* ── Connection status (announced to screen readers) ── */}
-      <div className="hidden sm:flex items-center gap-2 shrink-0">
+      <div className="flex min-w-0 shrink-0 items-center gap-2">
         <span
-          className={cn("size-2 rounded-full shrink-0", st.dot)}
+          className={cn("size-2 shrink-0 rounded-full", st.dot)}
           aria-hidden="true"
         />
-        <span role="status" className={cn("text-xs font-semibold", st.text)}>
+        <span
+          role="status"
+          className={cn("text-xs font-semibold", st.text, !isSm && "sr-only")}
+        >
           {st.label}
           {offlineMode && isConnected ? " (simulated offline)" : ""}
         </span>
         {uptime && (
           <span
-            className="text-2xs font-mono text-t-secondary bg-surface-inset border border-b-strong rounded px-1.5 py-0.5"
+            className="hidden rounded border border-b-strong bg-surface-inset px-1.5 py-0.5 font-mono text-2xs text-t-secondary md:inline"
             title="Time since connecting"
           >
             <span className="sr-only">Connected for </span>
@@ -195,46 +264,60 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
         )}
       </div>
 
-      {/* Quick actions — only when connected */}
-      {isConnected && (
+      {/* ── Quick actions — desktop (labelled when wide) ── */}
+      {isConnected && isLg && (
         <>
-          <div
-            className="h-6 w-px bg-b-strong shrink-0 hidden sm:block"
-            aria-hidden="true"
-          />
-          <div className="hidden sm:flex items-center gap-1">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => runService((s) => s.sendBootNotification())}
-            >
-              <RefreshCw aria-hidden="true" /> Boot
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => runService((s) => s.sendHeartbeat())}
-            >
-              <Zap aria-hidden="true" /> Heartbeat
-            </Button>
-            <Button
-              size="sm"
-              variant={offlineMode ? "soft-danger" : "ghost"}
-              aria-pressed={offlineMode}
-              onClick={() =>
-                // Goes through the service so going back online actually
-                // replays what was queued while the station was dark.
-                runService((s) => s.setOfflineMode(!offlineMode))
-              }
-              title={
-                offlineMode
-                  ? "Go back online and flush queued messages"
-                  : "Simulate a network drop"
-              }
-            >
-              <WifiOff aria-hidden="true" />
-              Simulate offline
-            </Button>
+          <div className="h-6 w-px shrink-0 bg-b-strong" aria-hidden="true" />
+          <div className="flex items-center gap-1">
+            {isWide ? (
+              <>
+                <Button size="sm" variant="ghost" onClick={sendBoot}>
+                  <RefreshCw aria-hidden="true" /> Boot
+                </Button>
+                <Button size="sm" variant="ghost" onClick={sendHeartbeat}>
+                  <Zap aria-hidden="true" /> Heartbeat
+                </Button>
+                <Button
+                  size="sm"
+                  variant={offlineMode ? "soft-danger" : "ghost"}
+                  aria-pressed={offlineMode}
+                  onClick={toggleOffline}
+                  title={
+                    offlineMode
+                      ? "Go back online and flush queued messages"
+                      : "Simulate a network drop"
+                  }
+                >
+                  <WifiOff aria-hidden="true" /> Simulate offline
+                </Button>
+              </>
+            ) : (
+              <>
+                <ToolButton
+                  label="Send BootNotification"
+                  size="icon-sm"
+                  onClick={sendBoot}
+                >
+                  <RefreshCw aria-hidden="true" />
+                </ToolButton>
+                <ToolButton
+                  label="Send Heartbeat"
+                  size="icon-sm"
+                  onClick={sendHeartbeat}
+                >
+                  <Zap aria-hidden="true" />
+                </ToolButton>
+                <ToolButton
+                  label={offlineMode ? "Go back online" : "Simulate offline"}
+                  size="icon-sm"
+                  variant={offlineMode ? "soft-danger" : "ghost"}
+                  aria-pressed={offlineMode}
+                  onClick={toggleOffline}
+                >
+                  <WifiOff aria-hidden="true" />
+                </ToolButton>
+              </>
+            )}
           </div>
         </>
       )}
@@ -248,7 +331,7 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
         onClick={() =>
           runService((s) => (isConnected ? s.disconnect() : s.connect()))
         }
-        className="px-4"
+        className="shrink-0 px-3 sm:px-4"
       >
         {isConnecting ? (
           <>
@@ -269,139 +352,233 @@ export function HeaderBar({ onSettingsOpen }: { onSettingsOpen: () => void }) {
       </Button>
 
       <div
-        className="h-6 w-px bg-b-strong shrink-0 hidden sm:block"
+        className="hidden h-6 w-px shrink-0 bg-b-strong sm:block"
         aria-hidden="true"
       />
 
-      {/* ── Project links & tools (open in a new tab) ── */}
+      {/* ── Links & tools ── */}
       <nav
         aria-label="Project links and tools"
-        className="flex items-center gap-1.5 shrink-0"
+        className="flex shrink-0 items-center gap-1.5"
       >
-        {/* Ecosystem link: collapses to icon-only when connected */}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <a
-                href={ECOSYSTEM_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="ocpp-ws-io ecosystem (opens in a new tab)"
-                className={cn(
-                  buttonVariants({
-                    variant: "neutral",
-                    size: isConnected ? "icon" : "sm",
-                  }),
-                  isConnected ? "size-8 p-0" : "max-xl:size-8 max-xl:px-0",
-                )}
-              >
-                <Blocks aria-hidden="true" />
-                {!isConnected && (
-                  <>
-                    <span className="hidden xl:inline">ocpp-ws-io</span>
-                    <ExternalLink
-                      aria-hidden="true"
-                      className="hidden xl:block size-3! text-t-muted"
-                    />
-                  </>
-                )}
-              </a>
-            }
-          />
-          <TooltipContent side="bottom">
-            <div className="flex items-center gap-1.5 font-medium">
-              <span>ocpp-ws-io ecosystem</span>
-              <ExternalLink
-                aria-hidden="true"
-                className="size-3 text-t-muted"
+        {isLg && (
+          <>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <a
+                    href={ECOSYSTEM_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="ocpp-ws-io ecosystem (opens in a new tab)"
+                    className={buttonVariants({
+                      variant: "neutral",
+                      size: isWide && !isConnected ? "sm" : "icon",
+                    })}
+                  >
+                    <Blocks aria-hidden="true" />
+                    {isWide && !isConnected && (
+                      <>
+                        <span>ocpp-ws-io</span>
+                        <ExternalLink
+                          aria-hidden="true"
+                          className="size-3! text-t-muted"
+                        />
+                      </>
+                    )}
+                  </a>
+                }
               />
-            </div>
-            <p className="text-2xs text-t-muted mt-0.5">
-              Tools, schemas & documentation
-            </p>
-          </TooltipContent>
-        </Tooltip>
+              <TooltipContent side="bottom">
+                ocpp-ws-io ecosystem
+                <p className="mt-0.5 text-2xs text-t-muted">
+                  Tools, schemas and documentation
+                </p>
+              </TooltipContent>
+            </Tooltip>
 
-        {/* GitHub link */}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <a
-                href={GITHUB_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="GitHub repository (opens in a new tab)"
-                className={buttonVariants({
-                  variant: "neutral",
-                  size: "icon",
-                })}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <a
+                    href={GITHUB_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="GitHub repository (opens in a new tab)"
+                    className={buttonVariants({
+                      variant: "neutral",
+                      size: "icon",
+                    })}
+                  >
+                    <HugeiconsIcon
+                      icon={GithubIcon}
+                      strokeWidth={2}
+                      aria-hidden="true"
+                    />
+                  </a>
+                }
+              />
+              <TooltipContent side="bottom">
+                View source on GitHub
+              </TooltipContent>
+            </Tooltip>
+          </>
+        )}
+
+        {/* One instance each; the trigger is inline on desktop and a menu
+            item below it. */}
+        <ShortcutsDialog
+          open={shortcutsOpen}
+          onOpenChange={setShortcutsOpen}
+          hideTrigger={!isLg}
+        />
+        <LocalhostGuideDialog
+          open={guideOpen}
+          onOpenChange={setGuideOpen}
+          hideTrigger={!isLg}
+          iconOnly={isConnected || !isWide}
+        />
+
+        {AUTH_ENABLED && isLg && (
+          <ToolButton
+            label="Sign out"
+            variant="neutral"
+            className="hover:text-danger"
+            onClick={() => auth?.logout()}
+          >
+            <LogOut aria-hidden="true" />
+          </ToolButton>
+        )}
+
+        {/* ── More (below desktop) ── */}
+        {!isLg && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <IconButton label="More actions" variant="neutral">
+                  <EllipsisVertical aria-hidden="true" />
+                </IconButton>
+              }
+            />
+            <DropdownMenuContent align="end" className="w-64">
+              {!isSm && (
+                <>
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>OCPP version</DropdownMenuLabel>
+                    <DropdownMenuRadioGroup
+                      value={config.ocppVersion}
+                      onValueChange={(v) =>
+                        updateConfig({
+                          ocppVersion: v as EmulatorConfig["ocppVersion"],
+                        })
+                      }
+                    >
+                      {VERSIONS.map((v) => (
+                        <DropdownMenuRadioItem
+                          key={v.value}
+                          value={v.value}
+                          disabled={vLocked}
+                        >
+                          {v.label}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuGroup>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+
+              {isConnected && (
+                <>
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>
+                      Charger{uptime ? ` · connected ${uptime}` : ""}
+                    </DropdownMenuLabel>
+                    <DropdownMenuItem onClick={sendBoot}>
+                      <RefreshCw aria-hidden="true" /> Send BootNotification
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={sendHeartbeat}>
+                      <Zap aria-hidden="true" /> Send Heartbeat
+                    </DropdownMenuItem>
+                    <DropdownMenuCheckboxItem
+                      checked={offlineMode}
+                      onCheckedChange={toggleOffline}
+                    >
+                      Simulate offline
+                    </DropdownMenuCheckboxItem>
+                  </DropdownMenuGroup>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+
+              <DropdownMenuItem onClick={() => setGuideOpen(true)}>
+                <Globe aria-hidden="true" /> Localhost guide
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setShortcutsOpen(true)}>
+                <Keyboard aria-hidden="true" /> Keyboard shortcuts
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                render={
+                  <a
+                    href={ECOSYSTEM_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  />
+                }
+              >
+                <Blocks aria-hidden="true" /> ocpp-ws-io ecosystem
+                <ExternalLink
+                  aria-hidden="true"
+                  className="ml-auto size-3! text-t-muted"
+                />
+                <span className="sr-only"> (opens in a new tab)</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                render={
+                  <a
+                    href={GITHUB_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  />
+                }
               >
                 <HugeiconsIcon
                   icon={GithubIcon}
                   strokeWidth={2}
                   aria-hidden="true"
                 />
-              </a>
-            }
-          />
-          <TooltipContent side="bottom">
-            <div className="flex items-center gap-1.5 font-medium">
-              <span>View source on GitHub</span>
-              <ExternalLink
-                aria-hidden="true"
-                className="size-3 text-t-muted"
-              />
-            </div>
-          </TooltipContent>
-        </Tooltip>
-
-        {/* ── Shortcuts ── */}
-        <ShortcutsDialog />
-
-        {/* ── Logout ── */}
-        {process.env.NEXT_PUBLIC_ALLOW_AUTH === "true" && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <IconButton
-                  label="Sign out"
-                  variant="neutral"
-                  className="hover:text-danger"
-                  onClick={() => auth?.logout()}
-                >
-                  <LogOut aria-hidden="true" />
-                </IconButton>
-              }
-            />
-            <TooltipContent side="bottom">Sign out</TooltipContent>
-          </Tooltip>
+                GitHub repository
+                <ExternalLink
+                  aria-hidden="true"
+                  className="ml-auto size-3! text-t-muted"
+                />
+                <span className="sr-only"> (opens in a new tab)</span>
+              </DropdownMenuItem>
+              {AUTH_ENABLED && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => auth?.logout()}
+                  >
+                    <LogOut aria-hidden="true" /> Sign out
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
 
-        {/* ── Localhost Guide: collapses to icon-only when connected ── */}
-        <LocalhostGuideDialog iconOnly={isConnected} />
-
-        {/* ── Settings ── */}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <IconButton
-                label="Open configuration panel"
-                variant="neutral"
-                onClick={onSettingsOpen}
-              >
-                <Settings aria-hidden="true" />
-              </IconButton>
-            }
-          />
-          <TooltipContent side="bottom">
-            <div className="flex items-center gap-2 font-medium">
-              <span>Configuration</span>
-              <kbd className="text-2xs font-mono bg-surface-inset px-1 py-0.5 rounded border border-b-strong text-t-muted">
-                Ctrl+1
-              </kbd>
-            </div>
-          </TooltipContent>
-        </Tooltip>
+        {/* ── Settings — always visible ── */}
+        <ToolButton
+          label="Open configuration panel"
+          hint="Ctrl+1"
+          variant="neutral"
+          onClick={onSettingsOpen}
+        >
+          <Settings aria-hidden="true" />
+        </ToolButton>
       </nav>
     </header>
   );
