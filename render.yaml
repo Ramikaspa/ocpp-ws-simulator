@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: ocpp-ws-simulator
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NEXT_PUBLIC_ALLOW_AUTH
+        value: "true"
+      - key: ALLOW_AUTH
+        value: "true"
+      - key: MASTER_USERNAME
+        sync: false
+      - key: MASTER_PASSWORD
+        sync: false

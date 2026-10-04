@@ -100,6 +100,14 @@ NEXT_PUBLIC_BING_SITE_VERIFICATION=""
 NEXT_PUBLIC_YANDEX_VERIFICATION=""
 ```
 
+### Deploy on Render
+
+1. Push this repository to GitHub, then create a **Blueprint** in Render and select the repository. Render will use the included `render.yaml` to build and run the app.
+2. Set `MASTER_USERNAME` and `MASTER_PASSWORD` when prompted, or add them under the service's **Environment** settings. Use a strong, unique password.
+3. Deploy the Blueprint and open the URL Render provides.
+
+The Blueprint enables the sign-in screen. Keep `NEXT_PUBLIC_ALLOW_AUTH` and `ALLOW_AUTH` set to `"true"`; the username and password are server-side environment variables and should not be committed to the repository. The simulator connects to your CSMS directly from the browser, so configure a publicly reachable `wss://` endpoint when using the HTTPS Render site. Render hosts the simulator UI, not a CSMS.
+
 ## Usage
 
 1. Click **Settings** (⚙) or the endpoint chip in the header to configure your CSMS WebSocket URL and Charge Point Identity.
